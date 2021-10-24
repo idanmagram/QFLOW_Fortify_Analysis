@@ -1,0 +1,6 @@
+fortify/results/**/*.csv filter=lfs diff=lfs merge=lfs -text
+fortify/results/**/*.txt filter=lfs diff=lfs merge=lfs -text
+fortify/analysis_outputs/**/*.csv filter=lfs diff=lfs merge=lfs -text
+fortify/analysis_outputs/**/*.txt filter=lfs diff=lfs merge=lfs -text
+fortify/analysis_outputs/**/*.pkl filter=lfs diff=lfs merge=lfs -text
+fortify/analysis_outputs/**/*.png filter=lfs diff=lfs merge=lfs -text
