@@ -1,20 +1,52 @@
 # Main script to run the FORTIFY tool
 
 import argparse
-import math
+from collections import defaultdict
 import module_maps
 import os
 import sig_prob
-import sys
-import time
-from datetime import datetime
 from tqdm import tqdm
 
-def main(input_file_path, top_module_name, ref_module_name, ref_instance_name, ref_sig_name, ref_sig_width, design, leaks_file_path, time_file_path):
-    startTime = time.time()
 
+def estimate_c_and_pbv_from_conditional_probs(s_hat_0, s_hat_1, s_hat, refSigBitNames, signalNames):
+    channel_C = defaultdict(lambda: defaultdict(float))  # C[h][y]
+    joint_J = defaultdict(lambda: defaultdict(float))     # J[y][h]
+    results = {}
+
+    for sig in signalNames:
+        if sig in refSigBitNames:
+            continue
+        for ref in refSigBitNames:
+            if sig not in s_hat_0 or sig not in s_hat_1:
+                continue
+            if ref not in s_hat_0[sig] or ref not in s_hat_1[sig]:
+                continue
+
+            p_y1_h0 = s_hat_0[sig][ref]
+            p_y1_h1 = s_hat_1[sig][ref]
+
+            channel_C[0][1] = p_y1_h0
+            channel_C[0][0] = 1 - p_y1_h0
+            channel_C[1][1] = p_y1_h1
+            channel_C[1][0] = 1 - p_y1_h1
+
+            for y in [0, 1]:
+                # Use true prior: assume uniform for ref bits, else use s_hat if available
+                prior_0 = s_hat.get(ref, 0.5)
+                prior_1 = 1 - prior_0
+                joint_J[y][0] = prior_0 * channel_C[0][y]
+                joint_J[y][1] = prior_1 * channel_C[1][y]
+
+            pbv = sum(max(joint_J[y][0], joint_J[y][1]) for y in [0, 1])
+            leakage = pbv / max(prior_0, prior_1)
+            results[(sig, ref)] = {'PBV': pbv, 'Leakage': leakage}
+
+    return results
+
+
+def main(input_file_path, top_module_name, ref_module_name, ref_instance_name, ref_sig_name, ref_sig_width, design):
     print()
-    print("******************************************************************")
+    print(" ******************************************************************")
 
     print("Design:", design)
     print()
@@ -36,8 +68,6 @@ def main(input_file_path, top_module_name, ref_module_name, ref_instance_name, r
     s_hat_0 = {}
     s_hat_1 = {}
 
-    # leakage of each bit of the reference signal
-    baseLeak = 1.0/math.sqrt(ref_sig_width)
 
     # initialise leakage scores of input bits
     for sig in inputSigBitNames:
@@ -66,53 +96,13 @@ def main(input_file_path, top_module_name, ref_module_name, ref_instance_name, r
         if not sig in s_hat:
             sig_prob.populateSigProbs(sig, set(), s_hat, s_hat_0, s_hat_1, truthTableMap, refSigBitNames, inputSigBitNames)
 
-
-    sigLeaks = {}
-
     print()
+    results = estimate_c_and_pbv_from_conditional_probs(s_hat_0, s_hat_1, s_hat, refSigBitNames, signalNames)
+    top_5 = sorted(results.items(), key=lambda x: x[1]['Leakage'], reverse=True)[:10]
 
-    # leakage score calculation
-    for sig in tqdm(sigWidths, desc="Leakage calculation"):
-        width = sigWidths[sig]
-        leakages = []
-        flag = 1
-        for j in range(width):
-            sigName = '{}[{}:{}]'.format(sig, j, j)
-            if sigName in signalNames:
-                leakVal = 0
-                for ref in refSigBitNames:
-                    leak = (s_hat_0[sigName][ref] - s_hat_1[sigName][ref])**2
-                    if leak > 0:
-                        y_bar = 2 * s_hat[sigName] * (1 - s_hat[sigName])
-                        denom = 4 * y_bar * (1 - y_bar)
-                        if denom != 0:
-                            leak = leak / math.sqrt(denom)
-                    leakVal += leak
-                leakages.append(leakVal**2)
-            else:
-                flag = 0
-                break
-        if flag:
-            sigLeaks[sig] = math.sqrt(sum(leakages)) * baseLeak
-            # leakage score may exceed 1 due to approximation of above leakage formula
-            if sigLeaks[sig] > 1:
-                sigLeaks[sig] = 1
-
-    endTime = time.time()
-
-    print()
-    print("Number of signals: {}".format(len(sigLeaks)))
-    print("Total time taken: {:.4f}s".format(endTime - startTime))
-
-    with open(time_file_path, "w") as tf:
-        tf.write("Number of signals: {}\n".format(len(sigLeaks)))
-        tf.write("Total time taken: {:.4f}s\n".format(endTime - startTime))
-
-    with open(leaks_file_path, "w") as lf:
-        lf.write("%s,%s\n" %("Signal", "Leakage"))
-        for sig in sorted(sigLeaks, key=sigLeaks.get, reverse=True):
-            leak = sigLeaks[sig]
-            lf.write("%s,%.4f\n" %(sig, leak))
+    print("\nTop 5 signals with highest leakage:")
+    for (sig, ref), metrics in top_5:
+        print(f"Signal: {sig}, Secret: {ref}, Leakage: {metrics['Leakage']:.4f}, PBV: {metrics['PBV']:.4f}")
 
     print()
     print("Completed!")
@@ -169,16 +159,6 @@ if __name__ == '__main__':
     ref_sig_width = args.RefSigWidth
     design = args.Design
 
-    results_path = args.results_path
-    if results_path:
-        results_path = 'results/' + results_path + '/' + design + '/'
-    else:
-        results_path = 'results/' + datetime.today().strftime('%Y-%m-%d-%H:%M:%S') + '/' + design + '/'
 
-    if not os.path.isdir(results_path):
-        os.makedirs(results_path)
 
-    leaks_file_path = '{}/leaks.txt'.format(results_path)
-    time_file_path = '{}/time.txt'.format(results_path)
-
-    main(input_file_path, top_module_name, ref_module_name, ref_instance_name, ref_sig_name, ref_sig_width, design, leaks_file_path, time_file_path)
+    main(input_file_path, top_module_name, ref_module_name, ref_instance_name, ref_sig_name, ref_sig_width, design)
