@@ -1,7 +1,7 @@
 
 # Power Side-Channel Analysis Frameworks
 
-This repository describes two frameworks which can be used for pre-Silicon power side-channel analysis of digital circuit designs (i.e., at the RTL or gate-level netlist stage): **PLAN** (Power attack Leakage ANalyzer) and **FORTIFY**.
+This repository describes two frameworks which can be used for pre-Silicon power side-channel analysis of digital circuit designs (i.e., at the RTL or gate-level netlist stage): **PLAN** (Power attack Leakage ANalyzer) and **FORTIFY**. QFLOW (Quantitive information flow) is implemented also (run_QFLOW.py)
 
 ## Publications
 
