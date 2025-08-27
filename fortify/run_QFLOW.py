@@ -6,6 +6,7 @@ import module_maps
 import os
 import sig_prob
 from tqdm import tqdm
+from itertools import product, combinations
 
 
 def estimate_c_and_pbv_from_conditional_probs(s_hat_0, s_hat_1, s_hat, refSigBitNames, signalNames):
@@ -37,9 +38,49 @@ def estimate_c_and_pbv_from_conditional_probs(s_hat_0, s_hat_1, s_hat, refSigBit
                 joint_J[y][0] = prior_0 * channel_C[0][y]
                 joint_J[y][1] = prior_1 * channel_C[1][y]
 
+
             pbv = sum(max(joint_J[y][0], joint_J[y][1]) for y in [0, 1])
             leakage = pbv / max(prior_0, prior_1)
+            print("-----------")
+            #print("pbv:", pbv)
+            #print("leakage before: ",leakage, " for ",sig)
+            leakage = pbv / max(s_hat.get(sig, 0.5), 1-s_hat.get(sig, 0.5))
+            #print("leakage after: ",leakage, " for ",sig, "and s_hat.get(sig, 0.5) is ",s_hat.get(sig, 0.5))
+            leakage = pbv / max(prior_0, prior_1)
             results[(sig, ref)] = {'PBV': pbv, 'Leakage': leakage}
+
+    return results
+
+
+def estimate_joint_pbv(s_hat_combined, refSigBitNames, signalNames):
+    results = {}
+
+    # Consider pairs (or triples) of reference bits
+    for ref_pair in combinations(refSigBitNames, 2):  # Extend to d-tuples if needed
+        h_values = list(product([0, 1], repeat=2))  # all (ref1, ref2) combinations
+
+        for sig in signalNames:
+            if any(ref not in s_hat_combined.get(sig, {}) for ref in ref_pair):
+                continue
+
+            joint_J = {y: 0 for y in [0, 1]}
+            priors = {h: 0.25 for h in h_values}  # assume uniform over joint secrets
+
+            # Build joint channel and joint distribution
+            channel_C = {}
+            for h in h_values:
+                h_key = tuple(h)
+                # Fetch the precomputed P(sig=1 | ref=h)
+                p_y1 = s_hat_combined[sig][h_key]  # This must be collected earlier
+                channel_C[h_key] = {1: p_y1, 0: 1 - p_y1}
+                for y in [0, 1]:
+                    joint_J[y] += priors[h_key] * channel_C[h_key][y]
+
+            # Compute PBV: sum over y of max_h Pr(h)·P(y|h)
+            pbv = sum(max(priors[h] * channel_C[h][y] for h in h_values) for y in [0, 1])
+            leakage = pbv / max(priors.values())  # normalized
+
+            results[(sig, ref_pair)] = {'PBV': pbv, 'Leakage': leakage}
 
     return results
 
@@ -94,15 +135,15 @@ def main(input_file_path, top_module_name, ref_module_name, ref_instance_name, r
     # signal probability and consitional signal probability calculation
     for sig in tqdm(signalNames, "Signal Probability Calculation"):
         if not sig in s_hat:
-            sig_prob.populateSigProbs(sig, set(), s_hat, s_hat_0, s_hat_1, truthTableMap, refSigBitNames, inputSigBitNames)
+            sig_prob.populateSigProbs(sig, set(), s_hat, s_hat_0, s_hat_1, truthTableMap, refSigBitNames, inputSigBitNames,sig_deps={})
 
     print()
     results = estimate_c_and_pbv_from_conditional_probs(s_hat_0, s_hat_1, s_hat, refSigBitNames, signalNames)
-    top_5 = sorted(results.items(), key=lambda x: x[1]['Leakage'], reverse=True)[:10]
+    top_5 = sorted(results.items(), key=lambda x: x[1]['Leakage'], reverse=True)
 
     print("\nTop 5 signals with highest leakage:")
     for (sig, ref), metrics in top_5:
-        print(f"Signal: {sig}, Secret: {ref}, Leakage: {metrics['Leakage']:.4f}, PBV: {metrics['PBV']:.4f}")
+        print(f"Signal: {sig}, Secret: {ref}, Leakage: {metrics['Leakage']:.4f}")
 
     print()
     print("Completed!")

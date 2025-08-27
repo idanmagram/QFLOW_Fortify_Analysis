@@ -62,11 +62,15 @@ def main(input_file_path, top_module_name, ref_module_name, ref_instance_name, r
                     s_hat_1[sig][ref] = 1
 
     # signal probability and consitional signal probability calculation
+    sig_deps = {}
+
     for sig in tqdm(signalNames, "Signal Probability Calculation"):
         if not sig in s_hat:
             sig_prob.populateSigProbs(sig, set(), s_hat, s_hat_0, s_hat_1, truthTableMap, refSigBitNames, inputSigBitNames)
 
-
+    print("s_hat: ", s_hat)
+    print("s_hat0: ", s_hat_0)
+    print("s_hat1: ", s_hat_1)
     sigLeaks = {}
 
     print()
@@ -180,5 +184,6 @@ if __name__ == '__main__':
 
     leaks_file_path = '{}/leaks.txt'.format(results_path)
     time_file_path = '{}/time.txt'.format(results_path)
-
+    start = time.time()
     main(input_file_path, top_module_name, ref_module_name, ref_instance_name, ref_sig_name, ref_sig_width, design, leaks_file_path, time_file_path)
+    print("Runtime:", time.time() - start, "seconds")
