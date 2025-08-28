@@ -3,7 +3,7 @@ import argparse
 from collections import defaultdict
 import module_maps
 import os
-import sig_prob_recon
+import sig_prob_recon_opt
 from tqdm import tqdm
 import time
 
@@ -65,13 +65,14 @@ def main(input_file_path, top_module_name, ref_module_name, ref_instance_name,
         ref_module_name, ref_instance_name,
         refSigBitNames
     )
-    print("inputNames ",inputNames)
+
     # input signal bits names
     inputSigBitNames = []
     for inp, wid in zip(inputNames, inputWidths):
         inputSigBitNames.extend([f'{inp}[{i}:{i}]' for i in range(wid)])
+
     # === Build depinfo (ancestors / fanout / depth) for reconvergence handling ===
-    depinfo = sig_prob_recon.build_dependency_info(truthTableMap, list(set(signalNames) | set(inputNames)))
+    #depinfo = sig_prob_recon.build_dependency_info(truthTableMap, list(set(signalNames) | set(inputNames)))
 
     # Simple factorized prior over inputs (customize if you have a better prior)
     prior = {name: 0.5 for name in inputSigBitNames}
@@ -101,6 +102,7 @@ def main(input_file_path, top_module_name, ref_module_name, ref_instance_name,
                     s_hat_1[sig][ref] = 1.0
 
     # signal probability and conditional probability calculation (dependency-aware)
+    '''
     for sig in tqdm(signalNames, desc="Signal Probability Calculation"):
         if sig not in s_hat:
             sig_prob_recon.populateSigProbs(
@@ -108,6 +110,8 @@ def main(input_file_path, top_module_name, ref_module_name, ref_instance_name,
                 truthTableMap, refSigBitNames, inputSigBitNames,
                 depinfo=depinfo, prior_map_or_callable=prior, max_cut=3
             )
+    '''
+    s_hat, s_hat_0, s_hat_1 = sig_prob_recon_opt.compute_sig_probs(truthTableMap, signalNames, refSigBitNames, prior_map_or_callable=prior, max_cut=3)
 
     print("s_hat: ",s_hat)
     print("s_hat0: ",s_hat_0)
@@ -116,10 +120,10 @@ def main(input_file_path, top_module_name, ref_module_name, ref_instance_name,
     results = estimate_c_and_pbv_from_conditional_probs(
         s_hat_0, s_hat_1, s_hat, refSigBitNames, signalNames
     )
-    top_10 = sorted(results.items(), key=lambda x: x[1]['Leakage'], reverse=True)[:10]
+    top_20 = sorted(results.items(), key=lambda x: x[1]['Leakage'], reverse=True)[:20]
 
     print("\nTop 10 signals with highest leakage:")
-    for (sig, ref), metrics in top_10:
+    for (sig, ref), metrics in top_20:
         print(f"Signal: {sig}, Leakage: {metrics['Leakage']:.4f}, PBV: {metrics['PBV']:.4f}")
 
     print("\nCompleted!")
