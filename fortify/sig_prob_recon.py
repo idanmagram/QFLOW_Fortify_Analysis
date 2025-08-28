@@ -129,6 +129,7 @@ def gate_prob_depaware(op, a, b, truthTableMap, depinfo,
 
     # pick a small cutset Z ⊆ shared (heuristics: fanout/depth if available)
     Z = list(shared)
+
     if hasattr(depinfo, "fanout"):
         Z.sort(key=lambda z: -depinfo.fanout.get(z, 0))
     if hasattr(depinfo, "depth"):
@@ -167,6 +168,8 @@ def gate_prob_depaware_with_clamps(op, a, b, truthTableMap, depinfo,
         return gate_formula(op, pA, pB)
 
     Z = list(shared)
+    print("For a ",a, " and b ",b, "the ancestors are ",Z)
+
     if hasattr(depinfo, "fanout"):
         Z.sort(key=lambda z: -depinfo.fanout.get(z, 0))
     if hasattr(depinfo, "depth"):
@@ -192,6 +195,8 @@ def gate_prob_depaware_with_clamps(op, a, b, truthTableMap, depinfo,
 def _indep(depinfo, a, b):
     Sa = depinfo.ancestors.get(a, set())
     Sb = depinfo.ancestors.get(b, set())
+    print("For a ", a, " and b ", b, "the ancestors are ", Sa, "and ",Sb)
+
     return len((Sa | {a}) & (Sb | {b})) == 0
 
 def _indep_given(depinfo, a, b, clamp_names):
@@ -263,6 +268,7 @@ def populateSigProbs(sig, encounteredSigs, s_hat, s_hat_0, s_hat_1,
                                  depinfo, prior_map_or_callable, max_cut)
 
                 # UNCONDITIONAL
+
                 if depinfo is None or _indep(depinfo, a, b):
                     s_hat[sig] = incSigProb(s_hat[a], s_hat[b], op)
                 else:
