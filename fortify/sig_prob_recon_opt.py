@@ -4,10 +4,13 @@
 # - Corrects cutset mixing under clamps: uses P(Z | clamps) with normalization
 # - Fast graph ops via bitset ancestors + integer clamp contexts
 # - Computes only relevant conditionals (refs in a signal's cone-of-influence)
+# - NEW: Unconditional evaluation is now **dependency-aware** at every binary gate
+#        (uses cutset enumeration when two child nets share ancestors), so
+#        reconvergence like N23 = AND(NAND(N2,N11), NAND(N11,N7)) yields P=0.625
+#        under uniform priors (instead of 0.5625 from a naive independence assumption).
 
 from __future__ import annotations
 from dataclasses import dataclass
-from itertools import product
 from typing import Any, Dict, List, Tuple, Optional, Callable, Set
 
 # ------------------------------------------------------------
@@ -84,16 +87,6 @@ def _exp_parents(exp: Exp, parents: Set[int]) -> None:
     # binary
     _exp_parents(exp[1], parents)
     _exp_parents(exp[2], parents)
-
-def _exp_eval_uncond(exp: Exp, uncond: List[float]) -> float:
-    k = exp[0]
-    if k == "const": return float(exp[1])
-    if k == "alias": return float(uncond[exp[1]])
-    if k == "not":   return 1.0 - _exp_eval_uncond(exp[1], uncond)
-    # binary
-    pA = _exp_eval_uncond(exp[1], uncond)
-    pB = _exp_eval_uncond(exp[2], uncond)
-    return incSigProb(pA, pB, k)
 
 @dataclass
 class DepInfo:
@@ -187,11 +180,14 @@ class _Engine:
         self.ref_mask = 0
         for rid in self.ref_ids: self.ref_mask |= (1 << rid)
 
-        # Prior
+        # Prior (optional; typically unused because we compute via network)
         self.prior = prior_map_or_callable
 
         # Unconditional probabilities (filled later)
         self.P_uncond: List[float] = [self.unknown_leaf_prob] * self.N
+
+        # Runtime config
+        self.max_cut: int = 3
 
     # --------- Clamp-aware eval with caching (keyed by (sig,mask,bits)) ---------
     def _prob_with_clamps_mask(self,
@@ -210,24 +206,34 @@ class _Engine:
 
         exp = self.comp_map.get(sig)
         if exp is None:
+            # Optional prior override for unknown leaves
+            if isinstance(self.prior, dict):
+                pname = self.id2name[sig]
+                if pname in self.prior:
+                    cache[key] = float(self.prior[pname])
+                    return cache[key]
             cache[key] = self.unknown_leaf_prob
             return cache[key]
 
-        def _eval(exp: Exp) -> float:
-            k = exp[0]
+        def _eval(e: Exp) -> float:
+            k = e[0]
             if k == "const":
-                return float(exp[1])
+                return float(e[1])
             if k == "alias":
-                sid = exp[1]
+                sid = e[1]
                 if (clamp_mask >> sid) & 1:
                     return 1.0 if ((clamp_bits >> sid) & 1) else 0.0
-                # Use cache recursively
                 return self._prob_with_clamps_mask(sid, clamp_mask, clamp_bits, cache)
             if k == "not":
-                return 1.0 - _eval(exp[1])
-            # binary
-            pA = _eval(exp[1])
-            pB = _eval(exp[2])
+                return 1.0 - _eval(e[1])
+            # binary: if both children are aliases, do dep-aware combination
+            a_exp, b_exp = e[1], e[2]
+            if a_exp[0] == "alias" and b_exp[0] == "alias":
+                a, b = a_exp[1], b_exp[1]
+                return self._gate_prob_depaware_mask(k, a, b, clamp_mask, clamp_bits)
+            # otherwise, fall back to combining evaluated probabilities
+            pA = _eval(a_exp)
+            pB = _eval(b_exp)
             return incSigProb(pA, pB, k)
 
         v = _eval(exp)
@@ -249,7 +255,7 @@ class _Engine:
         return p
 
     # --------- Pick a small cutset (shared ancestors \ {a,b} \ clamps), by fanout/depth ---------
-    def _pick_cutset_ids(self, a: int, b: int, max_cut: int, clamp_mask: int) -> List[int]:
+    def _pick_cutset_ids(self, a: int, b: int, clamp_mask: int) -> List[int]:
         shared_mask = ((self.depinfo.ancestors_mask[a] | (1 << a)) &
                        (self.depinfo.ancestors_mask[b] | (1 << b)))
         shared_mask &= ~((1 << a) | (1 << b) | clamp_mask)
@@ -263,13 +269,12 @@ class _Engine:
             ids.append(idx)
             m ^= lsb
         ids.sort(key=lambda z: (-self.depinfo.fanout[z], -self.depinfo.depth[z]))
-        return ids[:max_cut]
+        return ids[: self.max_cut]
 
     # --------- Gate probability with dependency awareness under clamps ---------
     def _gate_prob_depaware_mask(self,
                                  op: str, a: int, b: int,
-                                 clamp_mask: int, clamp_bits: int,
-                                 max_cut: int) -> float:
+                                 clamp_mask: int, clamp_bits: int) -> float:
         # Independence under clamps → fast combine
         if self.depinfo.indep_given_mask(a, b, clamp_mask):
             cache = {}
@@ -277,7 +282,7 @@ class _Engine:
             pB = self._prob_with_clamps_mask(b, clamp_mask, clamp_bits, cache)
             return incSigProb(pA, pB, op)
 
-        Z = self._pick_cutset_ids(a, b, max_cut, clamp_mask)
+        Z = self._pick_cutset_ids(a, b, clamp_mask)
         # No useful Z → just combine under current clamps
         if not Z:
             cache = {}
@@ -315,7 +320,11 @@ class _Engine:
     def compute_all(self, max_cut: int = 3) -> Tuple[
         Dict[str, float], Dict[str, Dict[str, float]], Dict[str, Dict[str, float]]
     ]:
-        # Unconditional via clamp-aware engine with (mask=0,bits=0) and caching
+        self.max_cut = max_cut
+
+        # Unconditional via clamp-aware engine with (mask=0,bits=0) and caching;
+        # because _prob_with_clamps_mask now calls _gate_prob_depaware_mask at
+        # every binary gate with alias children, reconvergence is handled.
         cache_uncond: Dict[Tuple[int,int,int], float] = {}
         order = sorted(range(self.N), key=lambda i: self.depinfo.depth[i])
         for u in order:
@@ -335,7 +344,7 @@ class _Engine:
             d1: Dict[str, float] = {}
 
             exp = self.comp_map.get(u)
-            # Figure out which refs are relevant (in ancestor cone)
+            # Which refs can influence u?
             relevant: List[int] = []
             m = self.depinfo.ancestors_mask[u] & self.ref_mask
             while m:
@@ -345,12 +354,10 @@ class _Engine:
                 m ^= lsb
 
             if exp is None:
-                # Unknown leaf → independent of refs (except self if it is a ref)
                 for rid in relevant:
                     rn = ref_names[rid]
                     d0[rn] = self.P_uncond[u]
                     d1[rn] = self.P_uncond[u]
-
             else:
                 k = exp[0]
                 if k == "const":
@@ -371,7 +378,6 @@ class _Engine:
 
                 elif k == "not":
                     c_exp = exp[1]
-                    # Evaluate child's conditional if alias; otherwise evaluate directly with clamps
                     if c_exp[0] == "alias":
                         c = c_exp[1]
                         src0 = s_hat_0.get(self.id2name[c], {})
@@ -383,7 +389,6 @@ class _Engine:
                             d0[rn] = 1.0 - v0
                             d1[rn] = 1.0 - v1
                     else:
-                        # Direct evaluation with clamps for each ref
                         for rid in relevant:
                             rn = ref_names[rid]
                             cm = (1 << rid)
@@ -395,7 +400,6 @@ class _Engine:
                 else:
                     # Binary op
                     a_exp, b_exp = exp[1], exp[2]
-                    # If both are aliases we can use indep/cutset; else evaluate direct with clamps
                     if a_exp[0] == "alias" and b_exp[0] == "alias":
                         a, b = a_exp[1], b_exp[1]
                         for rid in relevant:
@@ -409,11 +413,9 @@ class _Engine:
                                 d0[rn] = incSigProb(a0, b0, k)
                                 d1[rn] = incSigProb(a1, b1, k)
                             else:
-                                # dependency-aware under clamps with P(Z|clamps)
-                                d0[rn] = self._gate_prob_depaware_mask(k, a, b, cm, 0,  max_cut)
-                                d1[rn] = self._gate_prob_depaware_mask(k, a, b, cm, cm, max_cut)
+                                d0[rn] = self._gate_prob_depaware_mask(k, a, b, cm, 0)
+                                d1[rn] = self._gate_prob_depaware_mask(k, a, b, cm, cm)
                     else:
-                        # At least one side is a const or nested op: evaluate directly with clamps
                         for rid in relevant:
                             rn = ref_names[rid]
                             cm = (1 << rid)

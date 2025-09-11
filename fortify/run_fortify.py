@@ -68,9 +68,9 @@ def main(input_file_path, top_module_name, ref_module_name, ref_instance_name, r
         if not sig in s_hat:
             sig_prob.populateSigProbs(sig, set(), s_hat, s_hat_0, s_hat_1, truthTableMap, refSigBitNames, inputSigBitNames)
 
-    print("s_hat: ", s_hat)
-    print("s_hat0: ", s_hat_0)
-    print("s_hat1: ", s_hat_1)
+    #print("s_hat: ", s_hat)
+    #print("s_hat0: ", s_hat_0)
+    #print("s_hat1: ", s_hat_1)
     sigLeaks = {}
 
     print()

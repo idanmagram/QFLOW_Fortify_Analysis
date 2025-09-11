@@ -112,14 +112,15 @@ def prob_with_clamps(sig, truthTableMap, clamps, cache):
 # Reconvergence-aware gate probability (unconditional):
 #   choose a small cutset Z from shared ancestors of a and b.
 #   Sum over z in {0,1}^|Z|: P(Y|z) P(z).
+#   NOTE: we *restrict shared ancestors to primary inputs* via inputSigBitNames.
 # ------------------------------------------------------------------
 def gate_prob_depaware(op, a, b, truthTableMap, depinfo,
-                       prior_map_or_callable, max_cut=3, rare_thresh=1e-12):
-    # shared ancestors (exclude the nodes themselves for cutset)
+                       prior_map_or_callable, inputSigBitNames,
+                       max_cut=3, rare_thresh=0.1):
+    # shared ancestors among primary inputs (exclude the nodes themselves for cutset)
     Sa = depinfo.ancestors.get(a, set())
     Sb = depinfo.ancestors.get(b, set())
-    shared = (Sa | {a}) & (Sb | {b})
-    shared -= {a, b}
+    shared = ((Sa | {a}) & (Sb | {b}) & set(inputSigBitNames)) - {a, b}
 
     if not shared:
         cache = {}
@@ -142,6 +143,7 @@ def gate_prob_depaware(op, a, b, truthTableMap, depinfo,
         z_assign = dict(zip(Z, bits))
         pz = _pz(Z, bits, prior_map_or_callable)
         if pz < rare_thresh:
+            print("wow!!")
             continue
         pA_z = prob_with_clamps(a, truthTableMap, z_assign, cache)
         pB_z = prob_with_clamps(b, truthTableMap, z_assign, cache)
@@ -151,15 +153,15 @@ def gate_prob_depaware(op, a, b, truthTableMap, depinfo,
 # ------------------------------------------------------------------
 # Same as above, but WITH external clamps (e.g., ref=0/1).
 # We remove clamped names from the cutset, then condition on Z as well.
+#   NOTE: cutset is restricted to primary inputs via inputSigBitNames.
 # ------------------------------------------------------------------
 def gate_prob_depaware_with_clamps(op, a, b, truthTableMap, depinfo,
-                                   prior_map_or_callable, clamps,
-                                   max_cut=3, rare_thresh=1e-12):
+                                   inputSigBitNames, prior_map_or_callable, clamps,
+                                   max_cut=3, rare_thresh=0.1):
     clamp_names = set(clamps.keys())
     Sa = depinfo.ancestors.get(a, set())
     Sb = depinfo.ancestors.get(b, set())
-    shared = (Sa | {a}) & (Sb | {b})
-    shared -= (clamp_names | {a, b})
+    shared = ((Sa | {a}) & (Sb | {b}) & set(inputSigBitNames)) - (clamp_names | {a, b})
 
     if not shared:
         cache = {}
@@ -168,7 +170,7 @@ def gate_prob_depaware_with_clamps(op, a, b, truthTableMap, depinfo,
         return gate_formula(op, pA, pB)
 
     Z = list(shared)
-    print("For a ",a, " and b ",b, "the ancestors are ",Z)
+    #print("For a ", a, " and b ", b, "the ancestors are ", Z)
 
     if hasattr(depinfo, "fanout"):
         Z.sort(key=lambda z: -depinfo.fanout.get(z, 0))
@@ -191,19 +193,25 @@ def gate_prob_depaware_with_clamps(op, a, b, truthTableMap, depinfo,
 
 # ------------------------------------------------------------------
 # Small helpers for independence checks using depinfo
+#   NOTE: Independence is checked *only through primary inputs* if pi_set provided.
 # ------------------------------------------------------------------
-def _indep(depinfo, a, b):
+def _indep(depinfo, a, b, pi_set=None):
     Sa = depinfo.ancestors.get(a, set())
     Sb = depinfo.ancestors.get(b, set())
-    print("For a ", a, " and b ", b, "the ancestors are ", Sa, "and ",Sb)
+    shared = (Sa | {a}) & (Sb | {b})
+    print("shared for a ",a, " and b ",b, " are: ",len(shared))
+    if pi_set is not None:
+        shared &= set(pi_set)
+    return len(shared) == 0
 
-    return len((Sa | {a}) & (Sb | {b})) == 0
-
-def _indep_given(depinfo, a, b, clamp_names):
-    Sa = depinfo.ancestors.get(a, set()) - set(clamp_names)
-    Sb = depinfo.ancestors.get(b, set()) - set(clamp_names)
-    return len((Sa | ({a} - set(clamp_names))) &
-               (Sb | ({b} - set(clamp_names)))) == 0
+def _indep_given(depinfo, a, b, clamp_names, pi_set=None):
+    clamp_names = set(clamp_names)
+    Sa = depinfo.ancestors.get(a, set()) - clamp_names
+    Sb = depinfo.ancestors.get(b, set()) - clamp_names
+    shared = ( (Sa | ({a} - clamp_names)) & (Sb | ({b} - clamp_names)) )
+    if pi_set is not None:
+        shared &= set(pi_set)
+    return len(shared) == 0
 
 # ------------------------------------------------------------------
 # Public API: populateSigProbs (dependency-aware, conditional-aware)
@@ -212,7 +220,7 @@ def _indep_given(depinfo, a, b, clamp_names):
 #    - s_hat_1[s][ref]    = P(s=1 | ref=1)
 # ------------------------------------------------------------------
 def populateSigProbs(sig, encounteredSigs, s_hat, s_hat_0, s_hat_1,
-                     truthTableMap, refSigBitNames, inputSigBitNames,
+                     truthTableMap, refSigBitNames, inputSigBitNames, inputNames,
                      depinfo=None, prior_map_or_callable=None, max_cut=3):
     if sig in s_hat:
         return
@@ -239,7 +247,7 @@ def populateSigProbs(sig, encounteredSigs, s_hat, s_hat_0, s_hat_1,
         # alias
         elif isinstance(exp, str):
             populateSigProbs(exp, encounteredSigs, s_hat, s_hat_0, s_hat_1,
-                             truthTableMap, refSigBitNames, inputSigBitNames,
+                             truthTableMap, refSigBitNames, inputSigBitNames, inputNames,
                              depinfo, prior_map_or_callable, max_cut)
             s_hat[sig] = s_hat[exp]
             s_hat_0[sig] = {ref: s_hat_0[exp][ref] for ref in refSigBitNames}
@@ -251,7 +259,7 @@ def populateSigProbs(sig, encounteredSigs, s_hat, s_hat_0, s_hat_1,
             if op == "Not":
                 c = exp[1]
                 populateSigProbs(c, encounteredSigs, s_hat, s_hat_0, s_hat_1,
-                                 truthTableMap, refSigBitNames, inputSigBitNames,
+                                 truthTableMap, refSigBitNames, inputSigBitNames, inputNames,
                                  depinfo, prior_map_or_callable, max_cut)
                 s_hat[sig]   = 1.0 - s_hat[c]
                 s_hat_0[sig] = {ref: 1.0 - s_hat_0[c][ref] for ref in refSigBitNames}
@@ -261,36 +269,38 @@ def populateSigProbs(sig, encounteredSigs, s_hat, s_hat_0, s_hat_1,
                 a, b = exp[1], exp[2]
                 # recurse first so children's s_hat / s_hat_0/1 exist
                 populateSigProbs(a, encounteredSigs, s_hat, s_hat_0, s_hat_1,
-                                 truthTableMap, refSigBitNames, inputSigBitNames,
+                                 truthTableMap, refSigBitNames, inputSigBitNames, inputNames,
                                  depinfo, prior_map_or_callable, max_cut)
                 populateSigProbs(b, encounteredSigs, s_hat, s_hat_0, s_hat_1,
-                                 truthTableMap, refSigBitNames, inputSigBitNames,
+                                 truthTableMap, refSigBitNames, inputSigBitNames, inputNames,
                                  depinfo, prior_map_or_callable, max_cut)
 
                 # UNCONDITIONAL
 
-                if depinfo is None or _indep(depinfo, a, b):
+                if depinfo is None or _indep(depinfo, a, b, pi_set=inputSigBitNames):
                     s_hat[sig] = incSigProb(s_hat[a], s_hat[b], op)
                 else:
-                    s_hat[sig] = gate_prob_depaware(op, a, b, truthTableMap, depinfo,
-                                                    prior_map_or_callable or {}, max_cut)
+                    s_hat[sig] = gate_prob_depaware(
+                        op, a, b, truthTableMap, depinfo,
+                        prior_map_or_callable or {}, inputSigBitNames, max_cut
+                    )
 
                 # CONDITIONAL per ref
                 s_hat_0[sig] = {}
                 s_hat_1[sig] = {}
                 for ref in refSigBitNames:
                     # If independent GIVEN {ref}, combine children's conditionals
-                    if depinfo is None or _indep_given(depinfo, a, b, {ref}):
+                    if depinfo is None or _indep_given(depinfo, a, b, {ref}, pi_set=inputSigBitNames):
                         s_hat_0[sig][ref] = incSigProb(s_hat_0[a][ref], s_hat_0[b][ref], op)
                         s_hat_1[sig][ref] = incSigProb(s_hat_1[a][ref], s_hat_1[b][ref], op)
                     else:
                         # Still dependent given ref → small cutset + clamps
                         s_hat_0[sig][ref] = gate_prob_depaware_with_clamps(
-                            op, a, b, truthTableMap, depinfo,
+                            op, a, b, truthTableMap, depinfo, inputSigBitNames,
                             prior_map_or_callable or {}, {ref: 0}, max_cut
                         )
                         s_hat_1[sig][ref] = gate_prob_depaware_with_clamps(
-                            op, a, b, truthTableMap, depinfo,
+                            op, a, b, truthTableMap, depinfo, inputSigBitNames,
                             prior_map_or_callable or {}, {ref: 1}, max_cut
                         )
 
