@@ -130,6 +130,8 @@ def gate_prob_depaware(op, a, b, truthTableMap, depinfo,
 
     # pick a small cutset Z ⊆ shared (heuristics: fanout/depth if available)
     Z = list(shared)
+    #if len(Z) > 8:
+    #    print("shared length:", len(shared))
 
     if hasattr(depinfo, "fanout"):
         Z.sort(key=lambda z: -depinfo.fanout.get(z, 0))
@@ -143,7 +145,7 @@ def gate_prob_depaware(op, a, b, truthTableMap, depinfo,
         z_assign = dict(zip(Z, bits))
         pz = _pz(Z, bits, prior_map_or_callable)
         if pz < rare_thresh:
-            print("wow!!")
+            #print("wow!!")
             continue
         pA_z = prob_with_clamps(a, truthTableMap, z_assign, cache)
         pB_z = prob_with_clamps(b, truthTableMap, z_assign, cache)
@@ -170,7 +172,8 @@ def gate_prob_depaware_with_clamps(op, a, b, truthTableMap, depinfo,
         return gate_formula(op, pA, pB)
 
     Z = list(shared)
-    #print("For a ", a, " and b ", b, "the ancestors are ", Z)
+    #print("For a ", a, " and b ", b, "the ancestors len",len(Z)," are ", Z)
+    #print("len Z:", len(Z))
 
     if hasattr(depinfo, "fanout"):
         Z.sort(key=lambda z: -depinfo.fanout.get(z, 0))
@@ -199,9 +202,10 @@ def _indep(depinfo, a, b, pi_set=None):
     Sa = depinfo.ancestors.get(a, set())
     Sb = depinfo.ancestors.get(b, set())
     shared = (Sa | {a}) & (Sb | {b})
-    print("shared for a ",a, " and b ",b, " are: ",len(shared))
+    #print("shared for a ",a, " and b ",b, " are: ",len(shared))
     if pi_set is not None:
         shared &= set(pi_set)
+    #print("shared len PI", len(shared))
     return len(shared) == 0
 
 def _indep_given(depinfo, a, b, clamp_names, pi_set=None):

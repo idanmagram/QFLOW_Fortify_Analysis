@@ -110,9 +110,9 @@ def main(input_file_path, top_module_name, ref_module_name, ref_instance_name,
                 depinfo=depinfo, prior_map_or_callable=prior, max_cut=3
             )
 
-    print("s_hat: ",s_hat)
-    print("s_hat0: ",s_hat_0)
-    print("s_hat1: ", s_hat_1)
+    #print("s_hat: ",s_hat)
+    #print("s_hat0: ",s_hat_0)
+    #print("s_hat1: ", s_hat_1)
 
     results = estimate_c_and_pbv_from_conditional_probs(
         s_hat_0, s_hat_1, s_hat, refSigBitNames, signalNames
