@@ -101,14 +101,18 @@ def main(input_file_path, top_module_name, ref_module_name, ref_instance_name,
                     s_hat_1[sig][ref] = 1.0
 
     # signal probability and conditional probability calculation (dependency-aware)
-    print("depinf ",depinfo)
+    todo = sum(1 for s in signalNames if s not in s_hat)
+    done = 0
+
     for sig in tqdm(signalNames, desc="Signal Probability Calculation"):
         if sig not in s_hat:
             sig_prob_recon.populateSigProbs(
                 sig, set(), s_hat, s_hat_0, s_hat_1,
                 truthTableMap, refSigBitNames, inputSigBitNames, inputNames,
-                depinfo=depinfo, prior_map_or_callable=prior, max_cut=3
-            )
+                depinfo=depinfo, prior_map_or_callable=prior, max_cut=3)
+        done += 1
+        if done % 5 == 0:
+            print(f"[progress] computed {done}/{todo} signals (last: {sig})", flush=True)
 
     #print("s_hat: ",s_hat)
     #print("s_hat0: ",s_hat_0)
