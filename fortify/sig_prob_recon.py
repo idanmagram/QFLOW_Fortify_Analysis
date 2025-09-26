@@ -1,7 +1,20 @@
 # sig_prob_recon.py
 import sys
+import os
+import multiprocessing as mp
 from itertools import product
+from concurrent.futures import ProcessPoolExecutor, as_completed
+
 sys.setrecursionlimit(100000)
+
+# -----------------------
+# Tunable parallel knobs
+# -----------------------
+PAR_REF_THRESHOLD = 8      # parallelize conditional loop if >= this many refs
+CUT_ASSIGN_PAR_MIN = 16    # parallelize cutset enumeration if > this many assignments
+
+def _in_subprocess() -> bool:
+    return mp.current_process().name != "MainProcess"
 
 # ------------------------------------------------------------
 # Incremental signal probability (valid when inputs are
@@ -108,6 +121,53 @@ def prob_with_clamps(sig, truthTableMap, clamps, cache):
     cache[key] = 0.5
     return cache[key]
 
+# ========== Parallel helpers (top-level & picklable) ==========
+
+def _chunk_bits(all_bits, n):
+    L = list(all_bits)
+    if n <= 1 or len(L) <= n:
+        return [L]
+    size = (len(L) + n - 1) // n
+    return [L[i:i + size] for i in range(0, len(L), size)]
+
+def _gate_prob_chunk(op, a, b, truthTableMap, clamps_base, prior_map_or_callable, bits_chunk, Z):
+    cache = {}
+    total = 0.0
+    for bits in bits_chunk:
+        z_assign = dict(zip(Z, bits))
+        pz = _pz(Z, bits, prior_map_or_callable)
+        if pz <= 0.0:
+            continue
+        if clamps_base:
+            clamps = {**clamps_base, **z_assign}
+        else:
+            clamps = z_assign
+        pA_z = prob_with_clamps(a, truthTableMap, clamps, cache)
+        pB_z = prob_with_clamps(b, truthTableMap, clamps, cache)
+        total += gate_formula(op, pA_z, pB_z) * pz
+    return total
+
+def _cond_for_one_ref(ref, op, a, b,
+                      s0_a, s1_a, s0_b, s1_b,
+                      truthTableMap, depinfo, inputSigBitNames,
+                      prior_map_or_callable, max_cut):
+    # Independence given {ref}?
+    if depinfo is None or _indep_given(depinfo, a, b, {ref}, pi_set=inputSigBitNames):
+        p0 = incSigProb(s0_a[ref], s0_b[ref], op)
+        p1 = incSigProb(s1_a[ref], s1_b[ref], op)
+        return ref, p0, p1
+    else:
+        # In a worker, we'll fall back to serial cutset enumeration inside these calls
+        p0 = gate_prob_depaware_with_clamps(
+            op, a, b, truthTableMap, depinfo, inputSigBitNames,
+            prior_map_or_callable or {}, {ref: 0}, max_cut
+        )
+        p1 = gate_prob_depaware_with_clamps(
+            op, a, b, truthTableMap, depinfo, inputSigBitNames,
+            prior_map_or_callable or {}, {ref: 1}, max_cut
+        )
+        return ref, p0, p1
+
 # ------------------------------------------------------------------
 # Reconvergence-aware gate probability (unconditional):
 #   choose a small cutset Z from shared ancestors of a and b.
@@ -130,27 +190,46 @@ def gate_prob_depaware(op, a, b, truthTableMap, depinfo,
 
     # pick a small cutset Z ⊆ shared (heuristics: fanout/depth if available)
     Z = list(shared)
-    #if len(Z) > 8:
-    #    print("shared length:", len(shared))
-
     if hasattr(depinfo, "fanout"):
         Z.sort(key=lambda z: -depinfo.fanout.get(z, 0))
     if hasattr(depinfo, "depth"):
         Z.sort(key=lambda z: -depinfo.depth.get(z, 0))
     Z = Z[:max_cut]
 
-    pY = 0.0
-    cache = {}
-    for bits in product((0, 1), repeat=len(Z)):
-        z_assign = dict(zip(Z, bits))
-        pz = _pz(Z, bits, prior_map_or_callable)
-        if pz < rare_thresh:
-            #print("wow!!")
-            continue
-        pA_z = prob_with_clamps(a, truthTableMap, z_assign, cache)
-        pB_z = prob_with_clamps(b, truthTableMap, z_assign, cache)
-        pY  += gate_formula(op, pA_z, pB_z) * pz
-    return pY
+    num_assign = 1 << len(Z)
+
+    # Small job or inside a worker → do it serially
+    if num_assign <= CUT_ASSIGN_PAR_MIN or _in_subprocess():
+        pY = 0.0
+        cache = {}
+        for bits in product((0, 1), repeat=len(Z)):
+            pz = _pz(Z, bits, prior_map_or_callable)
+            if pz < rare_thresh:
+                continue
+            z_assign = dict(zip(Z, bits))
+            pA_z = prob_with_clamps(a, truthTableMap, z_assign, cache)
+            pB_z = prob_with_clamps(b, truthTableMap, z_assign, cache)
+            pY += gate_formula(op, pA_z, pB_z) * pz
+        return pY
+
+    # Parallel over assignments (each worker keeps its own cache)
+    all_bits = [bits for bits in product((0, 1), repeat=len(Z))
+                if _pz(Z, bits, prior_map_or_callable) >= rare_thresh]
+    if not all_bits:
+        return 0.0
+
+    workers = min(os.cpu_count() or 4, max(1, len(all_bits) // 4))
+    chunks = _chunk_bits(all_bits, workers)
+    with ProcessPoolExecutor(max_workers=workers) as ex:
+        parts = list(ex.map(
+            _gate_prob_chunk,
+            [op]*len(chunks), [a]*len(chunks), [b]*len(chunks),
+            [truthTableMap]*len(chunks),
+            [None]*len(chunks),  # clamps_base None here
+            [prior_map_or_callable]*len(chunks),
+            chunks, [Z]*len(chunks)
+        ))
+    return sum(parts)
 
 # ------------------------------------------------------------------
 # Same as above, but WITH external clamps (e.g., ref=0/1).
@@ -172,27 +251,47 @@ def gate_prob_depaware_with_clamps(op, a, b, truthTableMap, depinfo,
         return gate_formula(op, pA, pB)
 
     Z = list(shared)
-    #print("For a ", a, " and b ", b, "the ancestors len",len(Z)," are ", Z)
-    #print("len Z:", len(Z))
-
     if hasattr(depinfo, "fanout"):
         Z.sort(key=lambda z: -depinfo.fanout.get(z, 0))
     if hasattr(depinfo, "depth"):
         Z.sort(key=lambda z: -depinfo.depth.get(z, 0))
     Z = Z[:max_cut]
 
-    pY = 0.0
-    cache = {}
-    for bits in product((0, 1), repeat=len(Z)):
-        z_assign = dict(zip(Z, bits))
-        pz = _pz(Z, bits, prior_map_or_callable)
-        if pz < rare_thresh:
-            continue
-        clamps_z = {**clamps, **z_assign}
-        pA_z = prob_with_clamps(a, truthTableMap, clamps_z, cache)
-        pB_z = prob_with_clamps(b, truthTableMap, clamps_z, cache)
-        pY  += gate_formula(op, pA_z, pB_z) * pz
-    return pY
+    num_assign = 1 << len(Z)
+
+    # Small job or inside a worker → do it serially
+    if num_assign <= CUT_ASSIGN_PAR_MIN or _in_subprocess():
+        pY = 0.0
+        cache = {}
+        for bits in product((0, 1), repeat=len(Z)):
+            pz = _pz(Z, bits, prior_map_or_callable)
+            if pz < rare_thresh:
+                continue
+            clamps_z = {**clamps, **dict(zip(Z, bits))}
+            pA_z = prob_with_clamps(a, truthTableMap, clamps_z, cache)
+            pB_z = prob_with_clamps(b, truthTableMap, clamps_z, cache)
+            pY += gate_formula(op, pA_z, pB_z) * pz
+        return pY
+
+    # Parallel over assignments (each worker keeps its own cache)
+    all_bits = [bits for bits in product((0, 1), repeat=len(Z))
+                if _pz(Z, bits, prior_map_or_callable) >= rare_thresh]
+    if not all_bits:
+        return 0.0
+
+    workers = min(os.cpu_count() or 4, max(1, len(all_bits) // 4))
+    chunks = _chunk_bits(all_bits, workers)
+    clamps_base = dict(clamps)
+    with ProcessPoolExecutor(max_workers=workers) as ex:
+        parts = list(ex.map(
+            _gate_prob_chunk,
+            [op]*len(chunks), [a]*len(chunks), [b]*len(chunks),
+            [truthTableMap]*len(chunks),
+            [clamps_base]*len(chunks),
+            [prior_map_or_callable]*len(chunks),
+            chunks, [Z]*len(chunks)
+        ))
+    return sum(parts)
 
 # ------------------------------------------------------------------
 # Small helpers for independence checks using depinfo
@@ -202,10 +301,8 @@ def _indep(depinfo, a, b, pi_set=None):
     Sa = depinfo.ancestors.get(a, set())
     Sb = depinfo.ancestors.get(b, set())
     shared = (Sa | {a}) & (Sb | {b})
-    #print("shared for a ",a, " and b ",b, " are: ",len(shared))
     if pi_set is not None:
         shared &= set(pi_set)
-    #print("shared len PI", len(shared))
     return len(shared) == 0
 
 def _indep_given(depinfo, a, b, clamp_names, pi_set=None):
@@ -280,7 +377,6 @@ def populateSigProbs(sig, encounteredSigs, s_hat, s_hat_0, s_hat_1,
                                  depinfo, prior_map_or_callable, max_cut)
 
                 # UNCONDITIONAL
-
                 if depinfo is None or _indep(depinfo, a, b, pi_set=inputSigBitNames):
                     s_hat[sig] = incSigProb(s_hat[a], s_hat[b], op)
                 else:
@@ -289,24 +385,37 @@ def populateSigProbs(sig, encounteredSigs, s_hat, s_hat_0, s_hat_1,
                         prior_map_or_callable or {}, inputSigBitNames, max_cut
                     )
 
-                # CONDITIONAL per ref
+                # CONDITIONAL per ref (parallelized when many refs)
                 s_hat_0[sig] = {}
                 s_hat_1[sig] = {}
-                for ref in refSigBitNames:
-                    # If independent GIVEN {ref}, combine children's conditionals
-                    if depinfo is None or _indep_given(depinfo, a, b, {ref}, pi_set=inputSigBitNames):
-                        s_hat_0[sig][ref] = incSigProb(s_hat_0[a][ref], s_hat_0[b][ref], op)
-                        s_hat_1[sig][ref] = incSigProb(s_hat_1[a][ref], s_hat_1[b][ref], op)
-                    else:
-                        # Still dependent given ref → small cutset + clamps
-                        s_hat_0[sig][ref] = gate_prob_depaware_with_clamps(
-                            op, a, b, truthTableMap, depinfo, inputSigBitNames,
-                            prior_map_or_callable or {}, {ref: 0}, max_cut
-                        )
-                        s_hat_1[sig][ref] = gate_prob_depaware_with_clamps(
-                            op, a, b, truthTableMap, depinfo, inputSigBitNames,
-                            prior_map_or_callable or {}, {ref: 1}, max_cut
-                        )
+
+                s0_a, s1_a = s_hat_0[a], s_hat_1[a]
+                s0_b, s1_b = s_hat_0[b], s_hat_1[b]
+
+                do_parallel = (len(refSigBitNames) >= PAR_REF_THRESHOLD) and not _in_subprocess()
+
+                if do_parallel:
+                    max_workers = min(os.cpu_count() or 4, len(refSigBitNames))
+                    with ProcessPoolExecutor(max_workers=max_workers) as ex:
+                        futs = [
+                            ex.submit(_cond_for_one_ref, ref, op, a, b,
+                                      s0_a, s1_a, s0_b, s1_b,
+                                      truthTableMap, depinfo, inputSigBitNames,
+                                      prior_map_or_callable, max_cut)
+                            for ref in refSigBitNames
+                        ]
+                        for f in as_completed(futs):
+                            r, p0, p1 = f.result()
+                            s_hat_0[sig][r] = p0
+                            s_hat_1[sig][r] = p1
+                else:
+                    for ref in refSigBitNames:
+                        r, p0, p1 = _cond_for_one_ref(ref, op, a, b,
+                                                      s0_a, s1_a, s0_b, s1_b,
+                                                      truthTableMap, depinfo, inputSigBitNames,
+                                                      prior_map_or_callable, max_cut)
+                        s_hat_0[sig][r] = p0
+                        s_hat_1[sig][r] = p1
 
     else:
         # Unknown net (shouldn't happen for well-formed maps)
@@ -315,6 +424,18 @@ def populateSigProbs(sig, encounteredSigs, s_hat, s_hat_0, s_hat_1,
         s_hat_1[sig] = {ref: 0.5 for ref in refSigBitNames}
 
     encounteredSigs.remove(sig)
+
+# ------------------------------------------------------------------
+# Picklable DepInfo (moved to top-level so it can be sent to workers)
+# ------------------------------------------------------------------
+class DepInfo:
+    __slots__ = ("ancestors", "parents", "fanout", "depth", "universe")
+    def __init__(self, ancestors, parents, fanout, depth, universe):
+        self.ancestors = ancestors
+        self.parents   = parents
+        self.fanout    = fanout
+        self.depth     = depth
+        self.universe  = universe
 
 # ------------------------------------------------------------------
 # Dependency extraction (parents / fanout / depth / ancestors)
@@ -370,15 +491,5 @@ def build_dependency_info(truthTableMap, signalNames):
         anc_memo[s] = ancs
         return ancs
     ancestors = {s: ancestors_of(s) for s in universe}
-
-    # pack
-    class DepInfo:
-        __slots__ = ("ancestors", "parents", "fanout", "depth", "universe")
-        def __init__(self, ancestors, parents, fanout, depth, universe):
-            self.ancestors = ancestors
-            self.parents   = parents
-            self.fanout    = fanout
-            self.depth     = depth
-            self.universe  = universe
 
     return DepInfo(ancestors=ancestors, parents=parents, fanout=fanout, depth=depth, universe=universe)

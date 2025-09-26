@@ -3,6 +3,7 @@
 import argparse
 import math
 import module_maps
+import module_maps_unroll
 import os
 import sig_prob
 import sys
@@ -24,7 +25,8 @@ def main(input_file_path, top_module_name, ref_module_name, ref_instance_name, r
     refSigBitNames = ['{}[{}:{}]'.format(ref_sig_name, j, j) for j in range(ref_sig_width)]
 
     # performing static analysis to convert into directed graph representation and extracting subcircuit
-    inputNames, inputWidths, signalNames, sigWidths, truthTableMap = module_maps.subCircuitExtract(input_file_path, top_module_name, ref_module_name, ref_instance_name, refSigBitNames)
+    #inputNames, inputWidths, signalNames, sigWidths, truthTableMap = module_maps.subCircuitExtract(input_file_path, top_module_name, ref_module_name, ref_instance_name, refSigBitNames)
+    inputNames, inputWidths, signalNames, sigWidths, truthTableMap = module_maps_unroll.subCircuitExtract(input_file_path, top_module_name, ref_module_name, ref_instance_name, refSigBitNames,k=2)
 
     # input signal bits names
     inputSigBitNames = []

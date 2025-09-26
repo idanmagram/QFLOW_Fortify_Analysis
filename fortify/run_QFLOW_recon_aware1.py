@@ -6,6 +6,8 @@ import os
 import sig_prob_recon
 from tqdm import tqdm
 import time
+from datetime import datetime
+
 
 sys.setrecursionlimit(100000)
 
@@ -49,7 +51,9 @@ def estimate_c_and_pbv_from_conditional_probs(s_hat_0, s_hat_1, s_hat,
 
 
 def main(input_file_path, top_module_name, ref_module_name, ref_instance_name,
-         ref_sig_name, ref_sig_width, design):
+         ref_sig_name, ref_sig_width, design, leaks_file_path, time_file_path):
+    startTime = time.time()
+
     print("\n ******************************************************************")
     print("Design:", design, "\n")
     os.environ["PATH"] = r"C:\iverilog\bin;" + os.environ["PATH"]
@@ -111,8 +115,6 @@ def main(input_file_path, top_module_name, ref_module_name, ref_instance_name,
                 truthTableMap, refSigBitNames, inputSigBitNames, inputNames,
                 depinfo=depinfo, prior_map_or_callable=prior, max_cut=3)
         done += 1
-        if done % 5 == 0:
-            print(f"[progress] computed {done}/{todo} signals (last: {sig})", flush=True)
 
     #print("s_hat: ",s_hat)
     #print("s_hat0: ",s_hat_0)
@@ -126,6 +128,60 @@ def main(input_file_path, top_module_name, ref_module_name, ref_instance_name,
     print("\nTop 10 signals with highest leakage:")
     for (sig, ref), metrics in top_10:
         print(f"Signal: {sig}, Leakage: {metrics['Leakage']:.4f}, PBV: {metrics['PBV']:.4f}")
+
+    sigLeaks = {}
+
+    print()
+    import math
+    baseLeak = 1.0/math.sqrt(ref_sig_width)
+
+    # leakage score calculation
+    for sig in tqdm(sigWidths, desc="Leakage calculation"):
+        width = sigWidths[sig]
+        leakages = []
+        flag = 1
+        for j in range(width):
+            sigName = '{}[{}:{}]'.format(sig, j, j)
+            if sigName in signalNames:
+                leakVal = 0
+                for ref in refSigBitNames:
+                    leak = (s_hat_0[sigName][ref] - s_hat_1[sigName][ref]) ** 2
+                    if leak > 0:
+                        y_bar = 2 * s_hat[sigName] * (1 - s_hat[sigName])
+                        denom = 4 * y_bar * (1 - y_bar)
+                        if denom != 0:
+                            leak = leak / math.sqrt(denom)
+                    leakVal += leak
+                leakages.append(leakVal ** 2)
+            else:
+                flag = 0
+                break
+        if flag:
+            sigLeaks[sig] = math.sqrt(sum(leakages)) * baseLeak
+            # leakage score may exceed 1 due to approximation of above leakage formula
+            if sigLeaks[sig] > 1:
+                sigLeaks[sig] = 1
+
+    endTime = time.time()
+
+    print()
+    print("Number of signals: {}".format(len(sigLeaks)))
+    print("Total time taken: {:.4f}s".format(endTime - startTime))
+
+    with open(time_file_path, "w") as tf:
+        tf.write("Number of signals: {}\n".format(len(sigLeaks)))
+        tf.write("Total time taken: {:.4f}s\n".format(endTime - startTime))
+
+    with open(leaks_file_path, "w") as lf:
+        lf.write("%s,%s\n" % ("Signal", "Leakage"))
+        for sig in sorted(sigLeaks, key=sigLeaks.get, reverse=True):
+            leak = sigLeaks[sig]
+            lf.write("%s,%.4f\n" % (sig, leak))
+
+    print()
+    print("Completed!")
+    print("******************************************************************")
+    print()
 
     print("\nCompleted!")
     print("******************************************************************\n")
@@ -147,9 +203,30 @@ if __name__ == '__main__':
     my_parser.add_argument('-r', '--results-path', type=str, action='store',
                            help='name of directory within results/ directory to store results')
 
+    # parsing the arguments
     args = my_parser.parse_args()
+
+    input_file_path = args.InputFilePath
+    top_module_name = args.TopModuleName
+    ref_module_name = args.RefModuleName
+    ref_instance_name = args.RefInstanceName
+    ref_sig_name = args.RefSigName
+    ref_sig_width = args.RefSigWidth
+    design = args.Design
+
     start = time.time()
+    results_path = args.results_path
+    if results_path:
+        results_path = 'results/' + results_path + '/' + design + '/'
+    else:
+        results_path = 'results/' + datetime.today().strftime('%Y-%m-%d-%H:%M:%S') + '/' + design + '/'
+
+    if not os.path.isdir(results_path):
+        os.makedirs(results_path)
+
+    leaks_file_path = '{}/leaks.txt'.format(results_path)
+    time_file_path = '{}/time.txt'.format(results_path)
     main(args.InputFilePath, args.TopModuleName,
          args.RefModuleName, args.RefInstanceName,
-         args.RefSigName, args.RefSigWidth, args.Design)
+         args.RefSigName, args.RefSigWidth, args.Design, leaks_file_path, time_file_path)
     print("Runtime:", time.time() - start, "seconds")
