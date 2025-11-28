@@ -45,6 +45,8 @@ def populateModuleAstMap(file_path):
     print("Parsing...")
     a = time.time()
     ast, directives = parse([file_path, 'std_cell_lib/std_gates.v', 'std_cell_lib/std_modules.v'])
+
+
     b = time.time()
 
     for item in ast.description.definitions:
@@ -52,6 +54,7 @@ def populateModuleAstMap(file_path):
 
     print("Parsing completed in {:.4f}s".format(b - a))
 
+# creates mappings between modules and their input ports & widths, output ports & widths, wires
 # creates mappings between modules and their input ports & widths, output ports & widths, wires
 def populateModuleInputOutputPortListMap(moduleAst):
     module_name = moduleAst.name
@@ -93,22 +96,34 @@ def getInstListFromAst(ast):
 
 # getting the list of rhs signal names from the ast type, instance name and its width
 def getRnames(x, instance_name, wid):
-    if isinstance(x, vast.Partselect):
+    # Constant literal on a port: e.g. .rcon(8'h01)
+    # Expand to a list of wid bits (LSB first)
+    if isinstance(x, vast.IntConst):
+        const_val = utils.verilogIntConstToInt(x)
+        bitstring = format(const_val, '0{}b'.format(wid))[::-1]  # LSB-first
+        rnames = [int(b) for b in bitstring]
+
+    elif isinstance(x, vast.Partselect):
         rname = '{}.{}'.format(instance_name, x.var.name)
         lsb = utils.verilogIntConstToInt(x.lsb)
         msb = utils.verilogIntConstToInt(x.msb)
         rnames = ['{}[{}:{}]'.format(rname, j, j) for j in range(lsb, msb + 1)]
+
     elif isinstance(x, vast.Pointer):
         rname = '{}.{}'.format(instance_name, x.var.name)
         ptr = utils.verilogIntConstToInt(x.ptr)
         signalName = '{}[{}:{}]'.format(rname, ptr, ptr)
         rnames = [signalName]
+
     elif isinstance(x, vast.Concat):
+        # Keep existing behavior: list of sub-expressions (strings/bit refs)
+        # Higher-level code that sees list will handle concatenation.
         rnames = [getSigName(y, instance_name) for y in x.list[::-1]]
-    elif isinstance(x, vast.IntConst):
-        rnames = [utils.verilogIntConstToInt(x)]
+
     else:
-        rname = '{}.{}'.format(instance_name, x)
+        # Identifier or other simple expression: treat as wid-bit vector
+        # x is usually a vast.Identifier or a name string
+        rname = '{}.{}'.format(instance_name, x.name if hasattr(x, 'name') else x)
         rnames = ['{}[{}:{}]'.format(rname, j, j) for j in range(wid)]
 
     return rnames
@@ -380,17 +395,17 @@ def populateModuleExprMap(module_name, instance_name):
     for w, wid in sorted(moduleWireWidthMap[module_name].items()):
         sigName = '{}.{}'.format(instance_name, w)
         sigWidths[sigName] = wid
-
-    # populating the truth table with expressions corresponding to the wires in the instance
     astProcessed = {}
+
+
     for node in modTopSortMap:
         for (key, val) in node.incomingEdgeAstMap.items():
             for ast in val:
                 if hash(ast) not in astProcessed:
                     astProcessed[hash(ast)] = True
                     if isinstance(ast, vast.Assign) or isinstance(ast, vast.NonblockingSubstitution):
-                        lhsAst = ast.left.var
-                        rhsAst = ast.right.var
+                        lhsAst = getattr(ast.left, "var", ast.left)
+                        rhsAst = getattr(ast.right, "var", ast.right)
                         lname = getSigName(lhsAst, instance_name)
                         rname = getSigName(rhsAst, instance_name)
 
@@ -411,21 +426,64 @@ def populateModuleExprMap(module_name, instance_name):
                                 for i in range(low, high+1):
                                     truthTableMap['{}[{}:{}]'.format(lnameonly, i, i)] = [rnames[0], rnames[1][i-low], rnames[2][i-low]]
 
+
                             elif isinstance(rhsAst, vast.IntConst):
-                                bitVals = [int(x) for x in format(rname, str('0'+str(high-low+1)+'b'))]
-                                bitVals.reverse()
-                                for i in range(low, high+1):
-                                    truthTableMap['{}[{}:{}]'.format(lnameonly, i, i)] = bitVals[i-low]
-
+                                print("!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!")
+                                # Convert Verilog literal (e.g. "8'h01") to integer
+                                const_val = utils.verilogIntConstToInt(rhsAst)
+                                width = high - low + 1
+                                # Build a binary string of the right width
+                                bitstring = format(const_val, '0{}b'.format(width))
+                                bitstring = bitstring[::-1]
+                                for i in range(low, high + 1):
+                                    bit_idx = i - low
+                                    truthTableMap['{}[{}:{}]'.format(lnameonly, i, i)] = int(bitstring[bit_idx])
                             else:
-                                rnameonly = rname.rsplit('[', 1)[0]
-                                rbase = int(rname.split("]")[0].split(":")[1])
-                                for i in range(low, high+1):
-                                    truthTableMap['{}[{}:{}]'.format(lnameonly, i, i)] = '{}[{}:{}]'.format(rnameonly, rbase+i-low, rbase+i-low)
-
+                                # Check if rname is a list (concatenation or operation result)
+                                if isinstance(rname, list):
+                                    # Handle concatenation: rname is [signal1, signal2, signal3, ...]
+                                    # Bits are mapped left-to-right in the list (right-to-left in Verilog)
+                                    bit_index = low
+                                    for concat_elem in rname:
+                                        if isinstance(concat_elem, str):
+                                            if '[' in concat_elem:
+                                                elem_base = concat_elem.split('[')[0]
+                                                elem_range = concat_elem.split('[')[1].split(']')[0]
+                                                if ':' in elem_range:
+                                                    elem_msb, elem_lsb = map(int, elem_range.split(':'))
+                                                    elem_width = elem_msb - elem_lsb + 1
+                                                else:
+                                                    elem_lsb = int(elem_range)
+                                                    elem_width = 1
+                                            else:
+                                                elem_base = concat_elem
+                                                elem_width = sigWidths.get(concat_elem, 1)
+                                                elem_lsb = 0
+                                            for j in range(elem_width):
+                                                if bit_index <= high:
+                                                    src_bit = '{}[{}:{}]'.format(elem_base, elem_lsb + j,
+                                                                                 elem_lsb + j)
+                                                    dest_bit = '{}[{}:{}]'.format(lnameonly, bit_index, bit_index)
+                                                    truthTableMap[dest_bit] = src_bit
+                                                    bit_index += 1
+                                        elif isinstance(concat_elem, int):
+                                            if bit_index <= high:
+                                                truthTableMap['{}[{}:{}]'.format(lnameonly, bit_index,
+                                                                                 bit_index)] = concat_elem
+                                                bit_index += 1
+                                else:
+                                    # Handle simple signal assignment
+                                    try:
+                                        rnameonly = rname.rsplit('[', 1)[0]
+                                        rbase = int(rname.split("]")[0].split(":")[1])
+                                        for i in range(low, high + 1):
+                                            truthTableMap['{}[{}:{}]'.format(lnameonly, i, i)] = '{}[{}:{}]'.format(
+                                                rnameonly, rbase + i - low, rbase + i - low)
+                                    except (IndexError, ValueError):
+                                        # Handle malformed signal names gracefully
+                                        truthTableMap['{}[{}:{}]'.format(lnameonly, low, high)] = rname
                     elif isinstance(ast, vast.Instance):
                         pass
-
                     else:
                         assert(False)
 

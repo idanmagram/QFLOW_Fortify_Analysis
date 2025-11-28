@@ -87,18 +87,23 @@ def getZ3ExprWithFunctionName(ast, nameExprMap, nameWidthMap, functionName, modu
         leftExpr, rightExpr = matchExprWidths(leftExpr, rightExpr)
         return z3.simplify(leftExpr == rightExpr)
 
-    elif isinstance(ast, vast.Srl):
-        leftExpr = getZ3ExprWithFunctionName(ast.left, nameExprMap, nameWidthMap, functionName, moduleAst, functionNameExprMap, functionNameInputWidthMap, functionNameInputListMap)
-        rightExpr = getZ3ExprWithFunctionName(ast.right, nameExprMap, nameWidthMap, functionName, moduleAst, functionNameExprMap, functionNameInputWidthMap, functionNameInputListMap)
 
-        leftExpr, rightExpr = matchExprWidths(leftExpr, rightExpr)
+    elif isinstance(ast, vast.Srl):
+        leftExpr = getZ3ExprWithFunctionName(ast.left, nameExprMap, nameWidthMap, functionName, moduleAst,
+                                             functionNameExprMap, functionNameInputWidthMap, functionNameInputListMap)
+        rightExpr = getZ3ExprWithFunctionName(ast.right, nameExprMap, nameWidthMap, functionName, moduleAst,
+                                              functionNameExprMap, functionNameInputWidthMap, functionNameInputListMap)
+        leftExpr, rightExpr = _coerce_shift_amount(leftExpr, rightExpr)
+
         return z3.simplify(z3.LShR(leftExpr, rightExpr))
 
     elif isinstance(ast, vast.Sll):
-        leftExpr = getZ3ExprWithFunctionName(ast.left, nameExprMap, nameWidthMap, functionName, moduleAst, functionNameExprMap, functionNameInputWidthMap, functionNameInputListMap)
-        rightExpr = getZ3ExprWithFunctionName(ast.right, nameExprMap, nameWidthMap, functionName, moduleAst, functionNameExprMap, functionNameInputWidthMap, functionNameInputListMap)
+        leftExpr = getZ3ExprWithFunctionName(ast.left, nameExprMap, nameWidthMap, functionName, moduleAst,
+                                             functionNameExprMap, functionNameInputWidthMap, functionNameInputListMap)
+        rightExpr = getZ3ExprWithFunctionName(ast.right, nameExprMap, nameWidthMap, functionName, moduleAst,
+                                              functionNameExprMap, functionNameInputWidthMap, functionNameInputListMap)
+        leftExpr, rightExpr = _coerce_shift_amount(leftExpr, rightExpr)
 
-        leftExpr, rightExpr = matchExprWidths(leftExpr, rightExpr)
         return z3.simplify(z3.LShl(leftExpr, rightExpr))
 
     elif isinstance(ast, vast.Pointer):
@@ -170,6 +175,34 @@ def getZ3ExprWithFunctionName(ast, nameExprMap, nameWidthMap, functionName, modu
     else:
         ast.show()
         print('Warning: Not handling', type(ast), 'file: generate_z3.py', 'line no.:', utils.getLineNumber())
+
+def _coerce_shift_amount(leftExpr, rightExpr):
+    """Make rightExpr a BitVec of the same width as leftExpr without changing leftExpr."""
+    lw = leftExpr.size()
+
+    # If right is a BitVec, zero-extend or truncate to lw
+    if z3.is_bv(rightExpr):
+        rw = rightExpr.size()
+        if rw < lw:
+            rightExpr = z3.ZeroExt(lw - rw, rightExpr)
+        elif rw > lw:
+            rightExpr = z3.Extract(lw - 1, 0, rightExpr)
+        return leftExpr, rightExpr
+
+    # If right is an int numeral (e.g., from IntConst), cast to BitVec of lw
+    if z3.is_int_value(rightExpr):
+        rightExpr = z3.BitVecVal(rightExpr.as_long(), lw)
+        return leftExpr, rightExpr
+
+    # If right is a Python int
+    if isinstance(rightExpr, int):
+        rightExpr = z3.BitVecVal(rightExpr, lw)
+        return leftExpr, rightExpr
+
+    # As a fallback, try to BitVec-ify via zero extension from a 1-bit BV
+    # (or raise if that doesn't make sense in your codebase).
+    raise TypeError(f"Shift amount must be BitVec or int, got: {rightExpr}")
+
 
 def processBlockingSubstitution(statementAst, nameExprMap, nameWidthMap, functionName, moduleAst, functionNameExprMap, functionNameInputWidthMap, functionNameInputListMap):
     lhsAst = statementAst.left.var
@@ -470,6 +503,16 @@ def generateModuleMaps(moduleAst, moduleInputPortListMap, moduleOutputPortListMa
     for ast in moduleAst.items:
         if isinstance(ast, vast.Assign):
             updateAssignGraph(assignGraph, ast)
+        # ADDED: Handle sequential logic in always blocks
+        elif isinstance(ast, vast.Always):
+            statements = []
+            if hasattr(ast.statement, 'statements'):
+                statements = ast.statement.statements
+            else:
+                statements = [ast.statement]
+            for stmt in statements:
+                if isinstance(stmt, vast.NonblockingSubstitution) or isinstance(stmt, vast.BlockingSubstitution):
+                    updateAssignGraph(assignGraph, stmt)
 
         elif isinstance(ast, vast.InstanceList):
             for instAst in ast.instances:

@@ -14,6 +14,9 @@ def incSigProb(a, b, op):
 # recursive signal probability and conditional signal probability calculation
 def populateSigProbs(sig, encounteredSigs, s_hat, s_hat_0, s_hat_1, truthTableMap, refSigBitNames, inputSigBitNames):
     # to avoid recomputation of already calculated signal probability values
+    #print("truthTableMap ",truthTableMap)
+    #if "top.tro.load[0:0]" in sig:
+    #    print("idna")
     if sig in s_hat:
         return
 
@@ -55,6 +58,8 @@ def populateSigProbs(sig, encounteredSigs, s_hat, s_hat_0, s_hat_1, truthTableMa
         # we calculate the signal probability recursively from the signal probabilities
         # of the inputs of the operation (gate)
         elif isinstance(exp, list):
+            if "top.tro.counter[0:0]" in sig:
+                print("idna")
             op = exp[0]
             if op == "Not":
                 populateSigProbs(exp[1], encounteredSigs, s_hat, s_hat_0, s_hat_1, truthTableMap, refSigBitNames, inputSigBitNames)
@@ -65,6 +70,8 @@ def populateSigProbs(sig, encounteredSigs, s_hat, s_hat_0, s_hat_1, truthTableMa
                     s_hat_0[sig][ref] = 1 - s_hat_0[exp[1]][ref]
                     s_hat_1[sig][ref] = 1 - s_hat_1[exp[1]][ref]
             else: # And, Or, Xor
+                if "top.tro.counter[0:0]" in sig:
+                    print("idna")
                 populateSigProbs(exp[1], encounteredSigs, s_hat, s_hat_0, s_hat_1, truthTableMap, refSigBitNames, inputSigBitNames)
                 populateSigProbs(exp[2], encounteredSigs, s_hat, s_hat_0, s_hat_1, truthTableMap, refSigBitNames, inputSigBitNames)
                 s_hat[sig] = incSigProb(s_hat[exp[1]], s_hat[exp[2]], op)

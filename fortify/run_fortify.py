@@ -3,8 +3,8 @@
 import argparse
 import math
 import module_maps
-import module_maps_unroll
 import os
+import fsm_extract
 import sig_prob
 import sys
 import time
@@ -25,8 +25,23 @@ def main(input_file_path, top_module_name, ref_module_name, ref_instance_name, r
     refSigBitNames = ['{}[{}:{}]'.format(ref_sig_name, j, j) for j in range(ref_sig_width)]
 
     # performing static analysis to convert into directed graph representation and extracting subcircuit
-    #inputNames, inputWidths, signalNames, sigWidths, truthTableMap = module_maps.subCircuitExtract(input_file_path, top_module_name, ref_module_name, ref_instance_name, refSigBitNames)
-    inputNames, inputWidths, signalNames, sigWidths, truthTableMap = module_maps_unroll.subCircuitExtract(input_file_path, top_module_name, ref_module_name, ref_instance_name, refSigBitNames,k=2)
+    inputNames, inputWidths, signalNames, sigWidths, truthTableMap = module_maps.subCircuitExtract(input_file_path, top_module_name, ref_module_name, ref_instance_name, refSigBitNames)
+    #inputNames, inputWidths, signalNames, sigWidths, truthTableMap = module_maps_unroll.subCircuitExtract(input_file_path, top_module_name, ref_module_name, ref_instance_name, refSigBitNames,k=2)
+    print("inputNames ", inputNames)
+    print("signalNames ", signalNames)
+    print("truthTableMap 1", truthTableMap)
+
+    from pyverilog.vparser.parser import parse
+    from fsm_extract import extract_sequential_summary, format_fsm, format_cond_assigns
+
+    ast, _ = parse([input_file_path])
+    top = ast.description.definitions[0]  # or find by name
+    seqsum = extract_sequential_summary(top)
+
+    print(format_fsm(seqsum))
+    print()
+    print(format_cond_assigns(seqsum, limit=10))
+
 
     # input signal bits names
     inputSigBitNames = []
@@ -70,9 +85,9 @@ def main(input_file_path, top_module_name, ref_module_name, ref_instance_name, r
         if not sig in s_hat:
             sig_prob.populateSigProbs(sig, set(), s_hat, s_hat_0, s_hat_1, truthTableMap, refSigBitNames, inputSigBitNames)
 
-    #print("s_hat: ", s_hat)
-    #print("s_hat0: ", s_hat_0)
-    #print("s_hat1: ", s_hat_1)
+    print("s_hat: ", s_hat)
+    print("s_hat0: ", s_hat_0)
+    print("s_hat1: ", s_hat_1)
     sigLeaks = {}
 
     print()
