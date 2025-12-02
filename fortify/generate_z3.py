@@ -133,6 +133,14 @@ def getZ3ExprWithFunctionName(ast, nameExprMap, nameWidthMap, functionName, modu
     elif isinstance(ast, vast.Concat):
         return z3.simplify(z3.Concat([getZ3ExprWithFunctionName(item, nameExprMap, nameWidthMap, functionName, moduleAst, functionNameExprMap, functionNameInputWidthMap, functionNameInputListMap) for item in ast.list]))
 
+    elif isinstance(ast, vast.Cond):
+        condExpr = getZ3ExprWithFunctionName(ast.cond, nameExprMap, nameWidthMap, functionName, moduleAst, functionNameExprMap, functionNameInputWidthMap, functionNameInputListMap)
+        trueExpr = getZ3ExprWithFunctionName(ast.true_value, nameExprMap, nameWidthMap, functionName, moduleAst, functionNameExprMap, functionNameInputWidthMap, functionNameInputListMap)
+        falseExpr = getZ3ExprWithFunctionName(ast.false_value, nameExprMap, nameWidthMap, functionName, moduleAst, functionNameExprMap, functionNameInputWidthMap, functionNameInputListMap)
+
+        trueExpr, falseExpr = matchExprWidths(trueExpr, falseExpr)
+        return z3.simplify(z3.If(condExpr, trueExpr, falseExpr))
+
     elif isinstance(ast, vast.Unot):
         rightExpr = getZ3ExprWithFunctionName(ast.right, nameExprMap, nameWidthMap, functionName, moduleAst, functionNameExprMap, functionNameInputWidthMap, functionNameInputListMap)
         return z3.simplify(~rightExpr)
@@ -202,6 +210,74 @@ def _coerce_shift_amount(leftExpr, rightExpr):
     # As a fallback, try to BitVec-ify via zero extension from a 1-bit BV
     # (or raise if that doesn't make sense in your codebase).
     raise TypeError(f"Shift amount must be BitVec or int, got: {rightExpr}")
+
+
+def _combine_with_guard(cond, guard):
+    """Return cond if guard is None else (guard && cond)."""
+    if guard is None:
+        return cond
+    return vast.And(guard, cond)
+
+
+def _collect_guarded_assigns(stmt, guard, acc):
+    """Collect assignments under their guard from an Always statement."""
+    if isinstance(stmt, vast.Block):
+        for s in stmt.statements:
+            _collect_guarded_assigns(s, guard, acc)
+    elif isinstance(stmt, vast.NonblockingSubstitution) or isinstance(stmt, vast.BlockingSubstitution):
+        target = stmt.left.var
+        rhs = stmt.right.var
+        acc.setdefault(target, []).append((guard, rhs))
+    elif isinstance(stmt, vast.IfStatement):
+        cond = stmt.cond
+
+        # --- FIXED BLOCK START ---
+        # Changed stmt.then_stmt -> stmt.true_statement
+        _collect_guarded_assigns(stmt.true_statement, _combine_with_guard(cond, guard), acc)
+
+        # Changed stmt.else_stmt -> stmt.false_statement
+        if stmt.false_statement is not None:
+            neg_cond = vast.Unot(cond)
+            _collect_guarded_assigns(stmt.false_statement, _combine_with_guard(neg_cond, guard), acc)
+        # --- FIXED BLOCK END ---
+
+    elif isinstance(stmt, vast.CaseStatement):
+        switch = stmt.comp
+        seen_conds = []
+        for cas in stmt.caselist:
+            if cas.cond == 'default':
+                cond_expr = None
+                if seen_conds:
+                    ored = seen_conds[0]
+                    for other in seen_conds[1:]:
+                        ored = vast.Or(ored, other)
+                    cond_expr = vast.Unot(ored)
+                _collect_guarded_assigns(cas.statement, _combine_with_guard(cond_expr, guard), acc)
+            else:
+                # cas.condition can be a list of expressions
+                local_or = None
+                for cond_item in cas.cond:
+                    eq_expr = vast.Eq(switch, cond_item)
+                    local_or = eq_expr if local_or is None else vast.Or(local_or, eq_expr)
+                seen_conds.append(local_or)
+                _collect_guarded_assigns(cas.statement, _combine_with_guard(local_or, guard), acc)
+    else:
+        # unhandled statement types are ignored for now
+        pass
+
+def _guards_to_mux(assign_list):
+    """
+    Convert list of (guard, rhs) pairs into a single expression using nested muxes.
+    Priority follows list order.
+    """
+    expr = None
+    for guard, rhs in reversed(assign_list):
+        if guard is None:
+            expr = rhs
+        else:
+            default_rhs = expr if expr is not None else vast.IntConst("0")
+            expr = vast.Cond(guard, rhs, default_rhs)
+    return expr if expr is not None else vast.IntConst("0")
 
 
 def processBlockingSubstitution(statementAst, nameExprMap, nameWidthMap, functionName, moduleAst, functionNameExprMap, functionNameInputWidthMap, functionNameInputListMap):
@@ -505,14 +581,12 @@ def generateModuleMaps(moduleAst, moduleInputPortListMap, moduleOutputPortListMa
             updateAssignGraph(assignGraph, ast)
         # ADDED: Handle sequential logic in always blocks
         elif isinstance(ast, vast.Always):
-            statements = []
-            if hasattr(ast.statement, 'statements'):
-                statements = ast.statement.statements
-            else:
-                statements = [ast.statement]
-            for stmt in statements:
-                if isinstance(stmt, vast.NonblockingSubstitution) or isinstance(stmt, vast.BlockingSubstitution):
-                    updateAssignGraph(assignGraph, stmt)
+            guarded_assigns = {}
+            _collect_guarded_assigns(ast.statement, None, guarded_assigns)
+            for lhsAst, assign_list in guarded_assigns.items():
+                mux_expr = _guards_to_mux(assign_list)
+                nb = vast.NonblockingSubstitution(vast.Lvalue(lhsAst), vast.Rvalue(mux_expr))
+                updateAssignGraph(assignGraph, nb)
 
         elif isinstance(ast, vast.InstanceList):
             for instAst in ast.instances:

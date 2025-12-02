@@ -252,6 +252,11 @@ def getSigName(ast, instance_name):
         sigName = '{}.{}'.format(instance_name, ast.var.name)
         ptr = ast.ptr;
         sigName = '{}[{}:{}]'.format(sigName, ptr, ptr)
+    elif isinstance(ast, vast.Cond):
+        cond = getSigName(ast.cond, instance_name)
+        tval = getSigName(ast.true_value, instance_name)
+        fval = getSigName(ast.false_value, instance_name)
+        sigName = ['Cond', cond, tval, fval]
     elif isinstance(ast, vast.Unot):
         rname = getSigName(ast.right, instance_name)
         sigName = ['Not', rname]
@@ -438,6 +443,33 @@ def populateModuleExprMap(module_name, instance_name):
                                 for i in range(low, high + 1):
                                     bit_idx = i - low
                                     truthTableMap['{}[{}:{}]'.format(lnameonly, i, i)] = int(bitstring[bit_idx])
+                            elif isinstance(rhsAst, vast.Cond):
+                                condName = getSigName(rhsAst.cond, instance_name)
+                                tName = getSigName(rhsAst.true_value, instance_name)
+                                fName = getSigName(rhsAst.false_value, instance_name)
+
+                                def _bit_at(expr_name, idx):
+                                    if isinstance(expr_name, int):
+                                        return expr_name
+                                    if isinstance(expr_name, list):
+                                        # nested conditional or other expression; recurse on branches if it's a Cond
+                                        if len(expr_name) == 4 and expr_name[0] == 'Cond':
+                                            return ['Cond',
+                                                    expr_name[1],
+                                                    _bit_at(expr_name[2], idx),
+                                                    _bit_at(expr_name[3], idx)]
+                                        return expr_name
+                                    try:
+                                        base = expr_name.rsplit('[', 1)[0]
+                                        base_idx = int(expr_name.split("]")[0].split(":")[1])
+                                        return '{}[{}:{}]'.format(base, base_idx + idx - low, base_idx + idx - low)
+                                    except (IndexError, ValueError, AttributeError):
+                                        return expr_name
+
+                                for i in range(low, high + 1):
+                                    tbit = _bit_at(tName, i)
+                                    fbit = _bit_at(fName, i)
+                                    truthTableMap['{}[{}:{}]'.format(lnameonly, i, i)] = ['Cond', condName, tbit, fbit]
                             else:
                                 # Check if rname is a list (concatenation or operation result)
                                 if isinstance(rname, list):
