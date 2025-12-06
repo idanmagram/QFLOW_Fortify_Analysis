@@ -76,6 +76,16 @@ def getZ3ExprWithFunctionName(ast, nameExprMap, nameWidthMap, functionName, modu
         rightExpr = getZ3ExprWithFunctionName(ast.right, nameExprMap, nameWidthMap, functionName, moduleAst, functionNameExprMap, functionNameInputWidthMap, functionNameInputListMap)
         return z3.simplify(leftExpr & rightExpr)
 
+    elif isinstance(ast, vast.Land):
+        leftExpr = getZ3ExprWithFunctionName(ast.left, nameExprMap, nameWidthMap, functionName, moduleAst, functionNameExprMap, functionNameInputWidthMap, functionNameInputListMap)
+        rightExpr = getZ3ExprWithFunctionName(ast.right, nameExprMap, nameWidthMap, functionName, moduleAst, functionNameExprMap, functionNameInputWidthMap, functionNameInputListMap)
+        return z3.simplify(z3.And(leftExpr, rightExpr))
+
+    elif isinstance(ast, vast.Lor):
+        leftExpr = getZ3ExprWithFunctionName(ast.left, nameExprMap, nameWidthMap, functionName, moduleAst, functionNameExprMap, functionNameInputWidthMap, functionNameInputListMap)
+        rightExpr = getZ3ExprWithFunctionName(ast.right, nameExprMap, nameWidthMap, functionName, moduleAst, functionNameExprMap, functionNameInputWidthMap, functionNameInputListMap)
+        return z3.simplify(z3.Or(leftExpr, rightExpr))
+
     elif isinstance(ast, vast.Xor):
         leftExpr = getZ3ExprWithFunctionName(ast.left, nameExprMap, nameWidthMap, functionName, moduleAst, functionNameExprMap, functionNameInputWidthMap, functionNameInputListMap)
         rightExpr = getZ3ExprWithFunctionName(ast.right, nameExprMap, nameWidthMap, functionName, moduleAst, functionNameExprMap, functionNameInputWidthMap, functionNameInputListMap)
@@ -106,6 +116,14 @@ def getZ3ExprWithFunctionName(ast, nameExprMap, nameWidthMap, functionName, modu
 
         return z3.simplify(z3.LShl(leftExpr, rightExpr))
 
+    elif isinstance(ast, vast.Srl):
+        leftExpr = getZ3ExprWithFunctionName(ast.left, nameExprMap, nameWidthMap, functionName, moduleAst,
+                                             functionNameExprMap, functionNameInputWidthMap, functionNameInputListMap)
+        rightExpr = getZ3ExprWithFunctionName(ast.right, nameExprMap, nameWidthMap, functionName, moduleAst,
+                                              functionNameExprMap, functionNameInputWidthMap, functionNameInputListMap)
+        leftExpr, rightExpr = _coerce_shift_amount(leftExpr, rightExpr)
+        return z3.simplify(z3.LShR(leftExpr, rightExpr))
+
     elif isinstance(ast, vast.Pointer):
         varExpr = getZ3ExprWithFunctionName(ast.var, nameExprMap, nameWidthMap, functionName, moduleAst, functionNameExprMap, functionNameInputWidthMap, functionNameInputListMap)
         assert(isinstance(ast.ptr, vast.IntConst))
@@ -118,6 +136,14 @@ def getZ3ExprWithFunctionName(ast, nameExprMap, nameWidthMap, functionName, modu
 
         leftExpr, rightExpr = matchExprWidths(leftExpr, rightExpr)
         return z3.simplify(leftExpr * rightExpr)
+
+    elif isinstance(ast, vast.Plus):
+        leftExpr = getZ3ExprWithFunctionName(ast.left, nameExprMap, nameWidthMap, functionName, moduleAst,
+                                             functionNameExprMap, functionNameInputWidthMap, functionNameInputListMap)
+        rightExpr = getZ3ExprWithFunctionName(ast.right, nameExprMap, nameWidthMap, functionName, moduleAst,
+                                              functionNameExprMap, functionNameInputWidthMap, functionNameInputListMap)
+        leftExpr, rightExpr = matchExprWidths(leftExpr, rightExpr)
+        return z3.simplify(leftExpr + rightExpr)
 
     elif isinstance(ast, vast.Partselect):
         varExpr = getZ3ExprWithFunctionName(ast.var, nameExprMap, nameWidthMap, functionName, moduleAst, functionNameExprMap, functionNameInputWidthMap, functionNameInputListMap)
@@ -142,6 +168,10 @@ def getZ3ExprWithFunctionName(ast, nameExprMap, nameWidthMap, functionName, modu
         return z3.simplify(z3.If(condExpr, trueExpr, falseExpr))
 
     elif isinstance(ast, vast.Unot):
+        rightExpr = getZ3ExprWithFunctionName(ast.right, nameExprMap, nameWidthMap, functionName, moduleAst, functionNameExprMap, functionNameInputWidthMap, functionNameInputListMap)
+        return z3.simplify(~rightExpr)
+
+    elif isinstance(ast, vast.Ulnot):
         rightExpr = getZ3ExprWithFunctionName(ast.right, nameExprMap, nameWidthMap, functionName, moduleAst, functionNameExprMap, functionNameInputWidthMap, functionNameInputListMap)
         return z3.simplify(~rightExpr)
 

@@ -34,15 +34,17 @@ def populateSigProbs(sig, encounteredSigs, s_hat, s_hat_0, s_hat_1, truthTableMa
     if key in s_hat:
         return
 
+    if not (isinstance(key, int)) and "Baud8GeneratorACC[22:22]" in key:
+        print("Lior")
     # to avoid infinite recursion caused by circular dependencies, assigning zero signal probabilities
     if key in encounteredSigs:
         print("Circular dependency:", sig)
-        s_hat[key] = 0
+        s_hat[key] = 0.5
         s_hat_0[key] = {}
         s_hat_1[key] = {}
         for ref in refSigBitNames:
-            s_hat_0[key][ref] = 0
-            s_hat_1[key][ref] = 0
+            s_hat_0[key][ref] = 0.5
+            s_hat_1[key][ref] = 0.5
         return
 
     encounteredSigs.add(key)
@@ -52,29 +54,66 @@ def populateSigProbs(sig, encounteredSigs, s_hat, s_hat_0, s_hat_1, truthTableMa
         op = sig[0]
         if op == "Cond":
             cond = sig[1]
-            tval = sig[2]
-            fval = sig[3]
+            tval = sig[2] if len(sig) > 2 else 0
+            fval = sig[3] if len(sig) > 3 else 0
 
             populateSigProbs(cond, encounteredSigs, s_hat, s_hat_0, s_hat_1, truthTableMap, refSigBitNames, inputSigBitNames)
             populateSigProbs(tval, encounteredSigs, s_hat, s_hat_0, s_hat_1, truthTableMap, refSigBitNames, inputSigBitNames)
-            populateSigProbs(fval, encounteredSigs, s_hat, s_hat_0, s_hat_1, truthTableMap, refSigBitNames, inputSigBitNames)
+            # if fval is None (e.g., truncated unroll), treat as 0
+            if fval is not None:
+                populateSigProbs(fval, encounteredSigs, s_hat, s_hat_0, s_hat_1, truthTableMap, refSigBitNames, inputSigBitNames)
+            else:
+                s_hat[_key(fval)] = 0
+                s_hat_0[_key(fval)] = {ref: 0 for ref in refSigBitNames}
+                s_hat_1[_key(fval)] = {ref: 0 for ref in refSigBitNames}
 
             p_cond = s_hat[_key(cond)]
             s_hat[key] = p_cond * s_hat[_key(tval)] + (1 - p_cond) * s_hat[_key(fval)]
             s_hat_0[key] = {}
             s_hat_1[key] = {}
             for ref in refSigBitNames:
-                p0 = s_hat_0[_key(cond)][ref]
-                p1 = s_hat_1[_key(cond)][ref]
+                #p0 = s_hat_0[_key(cond)][ref]
+                #p1 = s_hat_1[_key(cond)][ref]
+                p0 = 0.5
+                p1 = 0.5
                 s_hat_0[key][ref] = p0 * s_hat_0[_key(tval)][ref] + (1 - p0) * s_hat_0[_key(fval)][ref]
                 s_hat_1[key][ref] = p1 * s_hat_1[_key(tval)][ref] + (1 - p1) * s_hat_1[_key(fval)][ref]
             return
 
+        if op == "Not":
+            a = sig[1] if len(sig) > 1 else 0
+            populateSigProbs(a, encounteredSigs, s_hat, s_hat_0, s_hat_1, truthTableMap, refSigBitNames, inputSigBitNames)
+            s_hat[key] = 1 - s_hat[_key(a)]
+            s_hat_0[key] = {ref: 1 - s_hat_0[_key(a)][ref] for ref in refSigBitNames}
+            s_hat_1[key] = {ref: 1 - s_hat_1[_key(a)][ref] for ref in refSigBitNames}
+            return
+
+        if op == "Mix":
+            parts = sig[1:]
+            if not parts:
+                s_hat[key] = 0
+                s_hat_0[key] = {ref: 0 for ref in refSigBitNames}
+                s_hat_1[key] = {ref: 0 for ref in refSigBitNames}
+                return
+            for p in parts:
+                populateSigProbs(p, encounteredSigs, s_hat, s_hat_0, s_hat_1, truthTableMap, refSigBitNames, inputSigBitNames)
+            s_hat[key] = sum(s_hat[_key(p)] for p in parts) / len(parts)
+            s_hat_0[key] = {ref: sum(s_hat_0[_key(p)][ref] for p in parts) / len(parts) for ref in refSigBitNames}
+            s_hat_1[key] = {ref: sum(s_hat_1[_key(p)][ref] for p in parts) / len(parts) for ref in refSigBitNames}
+            return
+
         # Binary ops: And/Or/Xor/Eq/NotEq
-        a = sig[1]
-        b = sig[2]
+        a = sig[1] if len(sig) > 1 else 0
+        b = sig[2] if len(sig) > 2 else 0
         populateSigProbs(a, encounteredSigs, s_hat, s_hat_0, s_hat_1, truthTableMap, refSigBitNames, inputSigBitNames)
         populateSigProbs(b, encounteredSigs, s_hat, s_hat_0, s_hat_1, truthTableMap, refSigBitNames, inputSigBitNames)
+
+        if op in ("Srl", "Sll", "Plus", "Times", "Minus"):
+            # Approximate: treat as pass-through of left operand for probabilities
+            s_hat[key] = s_hat[_key(a)]
+            s_hat_0[key] = {ref: s_hat_0[_key(a)][ref] for ref in refSigBitNames}
+            s_hat_1[key] = {ref: s_hat_1[_key(a)][ref] for ref in refSigBitNames}
+            return
 
         s_hat[key] = incSigProb(s_hat[_key(a)], s_hat[_key(b)], op)
         s_hat_0[key] = {}
@@ -86,6 +125,8 @@ def populateSigProbs(sig, encounteredSigs, s_hat, s_hat_0, s_hat_1, truthTableMa
 
     if sig in truthTableMap:
         # logical expression corresponding to this signal
+        if not (isinstance(key, int)) and "Baud8GeneratorACC[25:25]" in key:
+            print("Lior")
         exp = truthTableMap[sig]
 
         if isinstance(exp, int):
@@ -114,12 +155,15 @@ def populateSigProbs(sig, encounteredSigs, s_hat, s_hat_0, s_hat_1, truthTableMa
                 cond = exp[1]
                 tval = exp[2]
                 fval = exp[3]
+                if cond == 'top.TSC.MUX_Sel[0:0]':
+                    print("idan")
 
                 populateSigProbs(cond, encounteredSigs, s_hat, s_hat_0, s_hat_1, truthTableMap, refSigBitNames, inputSigBitNames)
                 populateSigProbs(tval, encounteredSigs, s_hat, s_hat_0, s_hat_1, truthTableMap, refSigBitNames, inputSigBitNames)
                 populateSigProbs(fval, encounteredSigs, s_hat, s_hat_0, s_hat_1, truthTableMap, refSigBitNames, inputSigBitNames)
 
                 p_cond = s_hat[_key(cond)]
+                #p_cond = 0.5
                 s_hat[key] = p_cond * s_hat[_key(tval)] + (1 - p_cond) * s_hat[_key(fval)]
                 s_hat_0[key] = {}
                 s_hat_1[key] = {}
@@ -137,6 +181,19 @@ def populateSigProbs(sig, encounteredSigs, s_hat, s_hat_0, s_hat_1, truthTableMa
                 for ref in refSigBitNames:
                     s_hat_0[key][ref] = 1 - s_hat_0[_key(exp[1])][ref]
                     s_hat_1[key][ref] = 1 - s_hat_1[_key(exp[1])][ref]
+            elif op == "Mix":
+                parts = exp[1:]
+                for p in parts:
+                    populateSigProbs(p, encounteredSigs, s_hat, s_hat_0, s_hat_1, truthTableMap, refSigBitNames, inputSigBitNames)
+                s_hat[key] = sum(s_hat[_key(p)] for p in parts) / len(parts) if parts else 0
+                s_hat_0[key] = {ref: sum(s_hat_0[_key(p)][ref] for p in parts) / len(parts) if parts else 0 for ref in refSigBitNames}
+                s_hat_1[key] = {ref: sum(s_hat_1[_key(p)][ref] for p in parts) / len(parts) if parts else 0 for ref in refSigBitNames}
+            elif op in ("Srl", "Sll", "Plus", "Times", "Minus"):
+                # Approximate: treat as pass-through of left operand
+                populateSigProbs(exp[1], encounteredSigs, s_hat, s_hat_0, s_hat_1, truthTableMap, refSigBitNames, inputSigBitNames)
+                s_hat[key] = s_hat[_key(exp[1])]
+                s_hat_0[key] = {ref: s_hat_0[_key(exp[1])][ref] for ref in refSigBitNames}
+                s_hat_1[key] = {ref: s_hat_1[_key(exp[1])][ref] for ref in refSigBitNames}
             else: # And, Or, Xor, Eq, NotEq
                 populateSigProbs(exp[1], encounteredSigs, s_hat, s_hat_0, s_hat_1, truthTableMap, refSigBitNames, inputSigBitNames)
                 populateSigProbs(exp[2], encounteredSigs, s_hat, s_hat_0, s_hat_1, truthTableMap, refSigBitNames, inputSigBitNames)
@@ -144,6 +201,7 @@ def populateSigProbs(sig, encounteredSigs, s_hat, s_hat_0, s_hat_1, truthTableMa
                 s_hat_0[key] = {}
                 s_hat_1[key] = {}
                 for ref in refSigBitNames:
+                    #You should check why s_hat_0[_key(exp[1])][ref], is 0
                     s_hat_0[key][ref] = incSigProb(s_hat_0[_key(exp[1])][ref], s_hat_0[_key(exp[2])][ref], op)
                     s_hat_1[key][ref] = incSigProb(s_hat_1[_key(exp[1])][ref], s_hat_1[_key(exp[2])][ref], op)
 
@@ -151,9 +209,20 @@ def populateSigProbs(sig, encounteredSigs, s_hat, s_hat_0, s_hat_1, truthTableMa
         # should never reach here; assigning zero signal probabilities as a corner case
         if not isinstance(sig,int):
             print("Should not reach this; check:", sig)
-        s_hat[key] = 0
+
+        s_hat[key] = 0.5
         s_hat_0[key] = {}
         s_hat_1[key] = {}
         for ref in refSigBitNames:
-            s_hat_0[key][ref] = 0
-            s_hat_1[key][ref] = 0
+            s_hat_0[key][ref] = 0.5
+            s_hat_1[key][ref] = 0.5
+        if sig == 0:
+            s_hat[key] = 0
+            for ref in refSigBitNames:
+                s_hat_0[key][ref] = 0
+                s_hat_1[key][ref] = 0
+        if sig == 1:
+            s_hat[key] = 1
+            for ref in refSigBitNames:
+                s_hat_0[key][ref] = 1
+                s_hat_1[key][ref] = 1

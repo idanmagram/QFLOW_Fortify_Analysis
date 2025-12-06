@@ -9,6 +9,8 @@ from pyverilog.vparser.parser import parse
 import utils
 import generate_z3
 
+SHIFT_UNROLL_LIMIT = 128  # max steps to unroll simple shift-register patterns
+
 # map for efficiently calculating truth table entries
 truthTableMap = {}
 # list of signal names
@@ -257,7 +259,23 @@ def getSigName(ast, instance_name):
         tval = getSigName(ast.true_value, instance_name)
         fval = getSigName(ast.false_value, instance_name)
         sigName = ['Cond', cond, tval, fval]
-    elif isinstance(ast, vast.Unot):
+    elif isinstance(ast, vast.Land):
+        lname = getSigName(ast.left, instance_name)
+        rname = getSigName(ast.right, instance_name)
+        sigName = ['And', lname, rname]
+    elif isinstance(ast, vast.Lor):
+        lname = getSigName(ast.left, instance_name)
+        rname = getSigName(ast.right, instance_name)
+        sigName = ['Or', lname, rname]
+    elif isinstance(ast, vast.Srl):
+        lname = getSigName(ast.left, instance_name)
+        rname = getSigName(ast.right, instance_name)
+        sigName = ['Srl', lname, rname]
+    elif isinstance(ast, vast.Plus):
+        lname = getSigName(ast.left, instance_name)
+        rname = getSigName(ast.right, instance_name)
+        sigName = ['Plus', lname, rname]
+    elif isinstance(ast, vast.Unot) or isinstance(ast, vast.Ulnot):
         rname = getSigName(ast.right, instance_name)
         sigName = ['Not', rname]
     elif isinstance(ast, vast.Or) or isinstance(ast, vast.And) or isinstance(ast, vast.Xor) or isinstance(ast, vast.Eq) or isinstance(ast, vast.NotEq) or isinstance(ast, vast.Sll): #or isinstance(ast, vast.Plus):
@@ -282,7 +300,7 @@ def getSigName(ast, instance_name):
         sigName = [getSigName(x, instance_name) for x in ast.list[::-1]]
     else:
         sigName = '{}.{}'.format(instance_name, ast)
-        width = sigWidths[sigName]
+        width = sigWidths.get(sigName, 1)
         sigName = '{}[{}:{}]'.format(sigName, width-1, 0)
 
     return sigName
@@ -419,12 +437,31 @@ def populateModuleExprMap(module_name, instance_name):
                         lbits = lnamesplit[1].split(']')[0]
                         lbits = lbits.split(':')
 
-                        if (lbits[0] == lbits[1]):
+                        low = int(lbits[1])
+                        high = int(lbits[0])
+
+                        if isinstance(rhsAst, vast.Plus):
+                            # bitwise approximate sum without carry for single-bit too
+                            def _bits(expr):
+                                try:
+                                    return getRnamesExpr(expr, low, high)
+                                except Exception:
+                                    return None
+                            if isinstance(rname, list) and len(rname) >= 3:
+                                a_bits = _bits(rname[1])
+                                b_bits = _bits(rname[2])
+                            else:
+                                a_bits = _bits(rname)
+                                b_bits = None
+                            for i in range(low, high + 1):
+                                abit = a_bits[1][i - low] if a_bits and len(a_bits) > 1 else 0
+                                bbit = b_bits[1][i - low] if b_bits and len(b_bits) > 1 else 0
+                                truthTableMap['{}[{}:{}]'.format(lnameonly, i, i)] = ['Xor', abit, bbit]
+
+                        elif (lbits[0] == lbits[1]):
                             truthTableMap[lname] = rname
 
                         else:
-                            low = int(lbits[1])
-                            high = int(lbits[0])
 
                             if isinstance(rhsAst, vast.Or) or isinstance(rhsAst, vast.And) or isinstance(rhsAst, vast.Xor) or isinstance(rhsAst, vast.Eq) or isinstance(rhsAst, vast.NotEq) or isinstance(rhsAst, vast.Sll):
                                 rnames = getRnamesExpr(rname, low, high)
@@ -458,6 +495,45 @@ def populateModuleExprMap(module_name, instance_name):
                                                     expr_name[1],
                                                     _bit_at(expr_name[2], idx),
                                                     _bit_at(expr_name[3], idx)]
+                                        if len(expr_name) == 3 and expr_name[0] == 'Srl':
+                                            base = expr_name[1]
+                                            sh = expr_name[2] if isinstance(expr_name[2], int) else 0
+                                            try:
+                                                base_name, rng = base.split('[', 1)
+                                                rng = rng.split(']')[0]
+                                                if ':' in rng:
+                                                    msb, lsb = map(int, rng.split(':'))
+                                                else:
+                                                    msb = lsb = int(rng)
+                                                src_idx = idx + sh
+                                                if src_idx < lsb or src_idx > msb:
+                                                    return 0
+                                                return f'{base_name}[{src_idx}:{src_idx}]'
+                                            except Exception:
+                                                return expr_name
+                                        if len(expr_name) == 3 and expr_name[0] == 'Plus':
+                                            left = expr_name[1]
+                                            right = expr_name[2]
+                                            def bit_from_name(name, bit_idx):
+                                                if isinstance(name, int):
+                                                    return (name >> bit_idx) & 1
+                                                if isinstance(name, list):
+                                                    return _bit_at(name, bit_idx)
+                                                try:
+                                                    base = name.rsplit('[', 1)[0]
+                                                    rng = name.split("[", 1)[1].split("]")[0]
+                                                    if ':' in rng:
+                                                        msb, lsb = map(int, rng.split(':'))
+                                                    else:
+                                                        msb = lsb = int(rng)
+                                                    if bit_idx < lsb or bit_idx > msb:
+                                                        return 0
+                                                    return f'{base}[{bit_idx}:{bit_idx}]'
+                                                except Exception:
+                                                    return name
+                                            lbit = bit_from_name(left, idx)
+                                            rbit = bit_from_name(right, idx)
+                                            return ['Xor', lbit, rbit]
                                         return expr_name
                                     try:
                                         base = expr_name.rsplit('[', 1)[0]
@@ -466,10 +542,79 @@ def populateModuleExprMap(module_name, instance_name):
                                     except (IndexError, ValueError, AttributeError):
                                         return expr_name
 
+                                # Build bit-level expressions first
+                                bit_exprs = {}
                                 for i in range(low, high + 1):
                                     tbit = _bit_at(tName, i)
                                     fbit = _bit_at(fName, i)
-                                    truthTableMap['{}[{}:{}]'.format(lnameonly, i, i)] = ['Cond', condName, tbit, fbit]
+                                    # simplify pattern: Cond(Not condName, X, 0) -> X
+                                    if isinstance(fbit, list) and len(fbit) == 4 and fbit[0] == 'Cond' and isinstance(fbit[1], list):
+                                        inner_cond = fbit[1]
+                                        if inner_cond == ['Not', condName] and fbit[3] == 0:
+                                            fbit = fbit[2]
+                                    bit_exprs[i] = ['Cond', condName, tbit, fbit]
+
+                                def _parse_self_ref(expr):
+                                    """Return bit index if expr is a self-reference to lnameonly[idx:idx]."""
+                                    if isinstance(expr, str) and expr.startswith(lnameonly + "["):
+                                        try:
+                                            idx_str = expr.split("[", 1)[1].split(":", 1)[0]
+                                            return int(idx_str)
+                                        except (IndexError, ValueError):
+                                            return None
+                                    return None
+
+                                def _build_time_chain(idx, depth):
+                                    """Approximate shift over time as an equal mix of successive key bits."""
+                                    depth = max(1, depth)
+                                    depth = min(depth, high - idx + 1)
+                                    key_bits = []
+                                    for step in range(depth):
+                                        bit_idx = idx + step
+                                        key_bits.append(_bit_at(tName, bit_idx))
+                                    if not key_bits:
+                                        return 0
+                                    return ['Mix'] + key_bits
+
+                                depth_limit = min(SHIFT_UNROLL_LIMIT, high - low + 1)
+                                for i in range(low, high + 1):
+                                    expr = bit_exprs.get(i)
+                                    if isinstance(expr, list) and expr[0] == 'Cond':
+                                        ref_idx = _parse_self_ref(expr[3])
+                                        if ref_idx is not None and ref_idx == i + 1:
+                                            chain_expr = _build_time_chain(i, depth_limit)
+                                            truthTableMap['{}[{}:{}]'.format(lnameonly, i, i)] = chain_expr
+                                            continue
+                                    truthTableMap['{}[{}:{}]'.format(lnameonly, i, i)] = expr
+                            elif isinstance(rhsAst, vast.Srl):
+                                # logical right shift by constant
+                                try:
+                                    shift_amt = utils.verilogIntConstToInt(rhsAst.right)
+                                except Exception:
+                                    shift_amt = 0
+                                for i in range(low, high + 1):
+                                    src_idx = i + shift_amt
+                                    if src_idx <= high:
+                                        truthTableMap['{}[{}:{}]'.format(lnameonly, i, i)] = '{}[{}:{}]'.format(lnameonly, src_idx, src_idx)
+                                    else:
+                                        truthTableMap['{}[{}:{}]'.format(lnameonly, i, i)] = 0
+                            elif isinstance(rhsAst, vast.Plus):
+                                # bitwise approximate sum without carry: sum_i = a_i XOR b_i
+                                def _bits(expr):
+                                    try:
+                                        return getRnamesExpr(expr, low, high)
+                                    except Exception:
+                                        return None
+                                if isinstance(rname, list) and len(rname) >= 3:
+                                    a_bits = _bits(rname[1])
+                                    b_bits = _bits(rname[2])
+                                else:
+                                    a_bits = _bits(rname)
+                                    b_bits = None
+                                for i in range(low, high + 1):
+                                    abit = a_bits[1][i - low] if a_bits and len(a_bits) > 1 else 0
+                                    bbit = b_bits[1][i - low] if b_bits and len(b_bits) > 1 else 0
+                                    truthTableMap['{}[{}:{}]'.format(lnameonly, i, i)] = ['Xor', abit, bbit]
                             else:
                                 # Check if rname is a list (concatenation or operation result)
                                 if isinstance(rname, list):
