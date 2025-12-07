@@ -44,9 +44,15 @@ def truncateExprToWidth(expr, targetWidth):
     exprWidth = expr.size()
     if exprWidth == targetWidth:
         return expr
+
     if targetWidth < exprWidth:
         return z3.Extract(targetWidth - 1, 0, expr)
+
+    if targetWidth > exprWidth:
+        return z3.ZeroExt(targetWidth - exprWidth, expr)
+
     assert(False)
+
 
 def matchExprWidths(leftExpr, rightExpr):
     leftWidth = leftExpr.size()
