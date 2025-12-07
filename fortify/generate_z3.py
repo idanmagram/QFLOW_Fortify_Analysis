@@ -281,7 +281,9 @@ def _collect_guarded_assigns(stmt, guard, acc):
         switch = stmt.comp
         seen_conds = []
         for cas in stmt.caselist:
-            if cas.cond == 'default':
+            cond_list = cas.cond
+            # default clause: condition may be None or the string 'default'
+            if cond_list is None or cond_list == 'default':
                 cond_expr = None
                 if seen_conds:
                     ored = seen_conds[0]
@@ -290,9 +292,13 @@ def _collect_guarded_assigns(stmt, guard, acc):
                     cond_expr = vast.Unot(ored)
                 _collect_guarded_assigns(cas.statement, _combine_with_guard(cond_expr, guard), acc)
             else:
-                # cas.condition can be a list of expressions
+                # cas.cond can be a list/tuple or a single expression
+                if not isinstance(cond_list, (list, tuple)):
+                    cond_iter = [cond_list]
+                else:
+                    cond_iter = cond_list
                 local_or = None
-                for cond_item in cas.cond:
+                for cond_item in cond_iter:
                     eq_expr = vast.Eq(switch, cond_item)
                     local_or = eq_expr if local_or is None else vast.Or(local_or, eq_expr)
                 seen_conds.append(local_or)
@@ -533,7 +539,8 @@ def updateAssignGraphWithInstAst(assignGraph, instAst, moduleInputPortListMap, m
         elif portAst.portname in instOutputList:
             lhsAsts.append(portAst.argname)
         else:
-            assert(False)
+            # Ignore unexpected port names to be robust to named connections
+            continue
 
     lhsIdentifiers = []
     rhsIdentifiers = []

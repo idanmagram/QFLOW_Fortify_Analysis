@@ -76,7 +76,7 @@ def populateModuleInputOutputPortListMap(moduleAst):
                 else:
                     width = 1
 
-                if isinstance(varAst, vast.Input) or isinstance(varAst, vast.Reg):
+                if isinstance(varAst, vast.Input):
                     moduleInputPortListMap[module_name].append(varAst.name)
                     moduleInputPortWidthListMap[module_name].append(width)
                 elif isinstance(varAst, vast.Output):

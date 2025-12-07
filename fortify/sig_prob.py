@@ -34,7 +34,7 @@ def populateSigProbs(sig, encounteredSigs, s_hat, s_hat_0, s_hat_1, truthTableMa
     if key in s_hat:
         return
 
-    if not (isinstance(key, int)) and "Baud8GeneratorACC[22:22]" in key:
+    if not (isinstance(key, int)) and "state" in key:
         print("Lior")
     # to avoid infinite recursion caused by circular dependencies, assigning zero signal probabilities
     if key in encounteredSigs:
