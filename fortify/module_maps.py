@@ -82,7 +82,7 @@ def populateModuleInputOutputPortListMap(moduleAst):
                 elif isinstance(varAst, vast.Output):
                     moduleOutputPortListMap[module_name].append(varAst.name)
                     moduleOutputPortWidthListMap[module_name].append(width)
-                elif isinstance(varAst, vast.Wire):
+                elif isinstance(varAst, vast.Wire) or isinstance(varAst, vast.Reg):
                     moduleWireListMap[module_name].append(varAst.name)
                     moduleWireWidthListMap[module_name].append(width)
 
@@ -429,8 +429,12 @@ def populateModuleExprMap(module_name, instance_name):
                     if isinstance(ast, vast.Assign) or isinstance(ast, vast.NonblockingSubstitution):
                         lhsAst = getattr(ast.left, "var", ast.left)
                         rhsAst = getattr(ast.right, "var", ast.right)
+
                         lname = getSigName(lhsAst, instance_name)
                         rname = getSigName(rhsAst, instance_name)
+                        print("lname: ",lname, " rname : ",rname)
+                        if "state" in lname:
+                            print("Tali")
 
                         lnamesplit = lname.rsplit('[', 1)
                         lnameonly = lnamesplit[0]
