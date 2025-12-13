@@ -501,6 +501,9 @@ def updateAssignGraph(assignGraph, ast):
 
     for lhs in lhsIdentifiers:
         for rhs in rhsIdentifiers:
+            # skip self-edge (e.g., state <= state) to avoid cycles blocking topsort
+            if lhs == rhs:
+                continue
             lhsNode = assignGraph.getNode(lhs)
             if lhsNode is None:
                 lhsNode = graph.GraphNode(lhs)

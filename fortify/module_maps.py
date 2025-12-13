@@ -432,9 +432,6 @@ def populateModuleExprMap(module_name, instance_name):
 
                         lname = getSigName(lhsAst, instance_name)
                         rname = getSigName(rhsAst, instance_name)
-                        print("lname: ",lname, " rname : ",rname)
-                        if "state" in lname:
-                            print("Tali")
 
                         lnamesplit = lname.rsplit('[', 1)
                         lnameonly = lnamesplit[0]

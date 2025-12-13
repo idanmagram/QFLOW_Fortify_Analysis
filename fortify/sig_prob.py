@@ -29,13 +29,15 @@ def _key(sig):
 # recursive signal probability and conditional signal probability calculation
 def populateSigProbs(sig, encounteredSigs, s_hat, s_hat_0, s_hat_1, truthTableMap, refSigBitNames, inputSigBitNames):
     key = _key(sig)
+    if key == "top.U_RSA.exp[31:0]":
+        print("idna")
 
     # to avoid recomputation of already calculated signal probability values
     if key in s_hat:
         return
 
-    if not (isinstance(key, int)) and "state" in key:
-        print("Lior")
+    #if not (isinstance(key, int)) and "state" in key:
+    #    print("Lior")
     # to avoid infinite recursion caused by circular dependencies, assigning zero signal probabilities
     if key in encounteredSigs:
         print("Circular dependency:", sig)
@@ -52,6 +54,16 @@ def populateSigProbs(sig, encounteredSigs, s_hat, s_hat_0, s_hat_1, truthTableMa
     # Expression nodes (e.g., Eq, Cond) that are not standalone signals
     if isinstance(sig, list):
         op = sig[0]
+        known_ops = {"Cond", "Not", "Mix", "And", "Or", "Xor", "Eq", "NotEq", "Srl", "Sll", "Plus", "Times", "Minus"}
+        if op not in known_ops:
+            # Treat as pass-through of first element if unrecognized op (e.g., concatenation artifacts)
+            target = op
+            populateSigProbs(target, encounteredSigs, s_hat, s_hat_0, s_hat_1, truthTableMap, refSigBitNames, inputSigBitNames)
+            s_hat[key] = s_hat[_key(target)]
+            s_hat_0[key] = {ref: s_hat_0[_key(target)][ref] for ref in refSigBitNames}
+            s_hat_1[key] = {ref: s_hat_1[_key(target)][ref] for ref in refSigBitNames}
+            return
+
         if op == "Cond":
             cond = sig[1]
             tval = sig[2] if len(sig) > 2 else 0
@@ -72,10 +84,10 @@ def populateSigProbs(sig, encounteredSigs, s_hat, s_hat_0, s_hat_1, truthTableMa
             s_hat_0[key] = {}
             s_hat_1[key] = {}
             for ref in refSigBitNames:
-                #p0 = s_hat_0[_key(cond)][ref]
-                #p1 = s_hat_1[_key(cond)][ref]
-                p0 = 0.5
-                p1 = 0.5
+                p0 = s_hat_0[_key(cond)][ref]
+                p1 = s_hat_1[_key(cond)][ref]
+                #p0 = 0.5
+                #p1 = 0.5
                 s_hat_0[key][ref] = p0 * s_hat_0[_key(tval)][ref] + (1 - p0) * s_hat_0[_key(fval)][ref]
                 s_hat_1[key][ref] = p1 * s_hat_1[_key(tval)][ref] + (1 - p1) * s_hat_1[_key(fval)][ref]
             return
