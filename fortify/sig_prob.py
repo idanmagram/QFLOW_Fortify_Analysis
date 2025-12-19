@@ -29,7 +29,7 @@ def _key(sig):
 # recursive signal probability and conditional signal probability calculation
 def populateSigProbs(sig, encounteredSigs, s_hat, s_hat_0, s_hat_1, truthTableMap, refSigBitNames, inputSigBitNames):
     key = _key(sig)
-    if key == "top.U_RSA.exp[31:0]":
+    if key == "top.U_RSA.indata[1:1]":
         print("idna")
 
     # to avoid recomputation of already calculated signal probability values
@@ -175,7 +175,6 @@ def populateSigProbs(sig, encounteredSigs, s_hat, s_hat_0, s_hat_1, truthTableMa
                 populateSigProbs(fval, encounteredSigs, s_hat, s_hat_0, s_hat_1, truthTableMap, refSigBitNames, inputSigBitNames)
 
                 p_cond = s_hat[_key(cond)]
-                #p_cond = 0.5
                 s_hat[key] = p_cond * s_hat[_key(tval)] + (1 - p_cond) * s_hat[_key(fval)]
                 s_hat_0[key] = {}
                 s_hat_1[key] = {}
@@ -218,23 +217,39 @@ def populateSigProbs(sig, encounteredSigs, s_hat, s_hat_0, s_hat_1, truthTableMa
                     s_hat_1[key][ref] = incSigProb(s_hat_1[_key(exp[1])][ref], s_hat_1[_key(exp[2])][ref], op)
 
     else:
-        # should never reach here; assigning zero signal probabilities as a corner case
-        if not isinstance(sig,int):
-            print("Should not reach this; check:", sig)
+        # missing definition; try per-bit product if this looks like a bus slice, else default to 0.5
+        prod = None
+        prod0 = {ref: None for ref in refSigBitNames}
+        prod1 = {ref: None for ref in refSigBitNames}
 
-        s_hat[key] = 0.5
-        s_hat_0[key] = {}
-        s_hat_1[key] = {}
-        for ref in refSigBitNames:
-            s_hat_0[key][ref] = 0.5
-            s_hat_1[key][ref] = 0.5
-        if sig == 0:
-            s_hat[key] = 0
-            for ref in refSigBitNames:
-                s_hat_0[key][ref] = 0
-                s_hat_1[key][ref] = 0
-        if sig == 1:
-            s_hat[key] = 1
-            for ref in refSigBitNames:
-                s_hat_0[key][ref] = 1
-                s_hat_1[key][ref] = 1
+        if isinstance(sig, str) and '[' in sig and ':' in sig:
+            try:
+                base = sig.split('[')[0]
+                rng = sig.split('[')[1].split(']')[0]
+                msb, lsb = map(int, rng.split(':'))
+                bits = range(lsb, msb + 1)
+                p = 1.0
+                p0 = {ref: 1.0 for ref in refSigBitNames}
+                p1 = {ref: 1.0 for ref in refSigBitNames}
+                for i in bits:
+                    bitname = f"{base}[{i}:{i}]"
+                    populateSigProbs(bitname, encounteredSigs, s_hat, s_hat_0, s_hat_1, truthTableMap, refSigBitNames, inputSigBitNames)
+                    p *= s_hat.get(_key(bitname), 0.5)
+                    for ref in refSigBitNames:
+                        p0[ref] *= s_hat_0.get(_key(bitname), {}).get(ref, 0.5)
+                        p1[ref] *= s_hat_1.get(_key(bitname), {}).get(ref, 0.5)
+                prod = p
+                prod0 = p0
+                prod1 = p1
+            except Exception:
+                prod = None
+
+        if prod is None:
+            s_hat[key] = 0.5 if sig not in (0, 1) else sig
+            s_hat_0[key] = {ref: s_hat[key] for ref in refSigBitNames}
+            s_hat_1[key] = {ref: s_hat[key] for ref in refSigBitNames}
+        else:
+            pmin = 0.25
+            s_hat[key] = max(prod, pmin)
+            s_hat_0[key] = {ref: max(prod0[ref], pmin) for ref in refSigBitNames}
+            s_hat_1[key] = {ref: max(prod1[ref], pmin) for ref in refSigBitNames}

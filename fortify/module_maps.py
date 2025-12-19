@@ -246,7 +246,10 @@ def extractSubCircuit(module_name, instance_name, ref_sig_bit_names):
 def getSigName(ast, instance_name):
     if isinstance(ast, vast.Identifier):
         sigName = '{}.{}'.format(instance_name, ast.name)
-        width = sigWidths[sigName]
+        width = sigWidths.get(sigName)
+        if width is None:
+            # treat identifiers with unknown width as scalar
+            width = 1
         sigName = '{}[{}:{}]'.format(sigName, width-1, 0)
     elif isinstance(ast, vast.Partselect):
         sigName = '{}.{}[{}:{}]'.format(instance_name, ast.var.name, ast.msb, ast.lsb)

@@ -133,7 +133,7 @@ def main(input_file_path, top_module_name, ref_module_name, ref_instance_name, r
         lf.write("%s,%s\n" %("Signal", "Leakage"))
         for sig in sorted(sigLeaks, key=sigLeaks.get, reverse=True):
             leak = sigLeaks[sig]
-            lf.write("%s,%.4f\n" %(sig, leak))
+            lf.write("%s,%.15f\n" %(sig, leak))
 
     print()
     print("Completed!")
