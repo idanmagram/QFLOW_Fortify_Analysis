@@ -113,9 +113,20 @@ def getRnames(x, instance_name, wid):
 
     elif isinstance(x, vast.Pointer):
         rname = '{}.{}'.format(instance_name, x.var.name)
-        ptr = utils.verilogIntConstToInt(x.ptr)
-        signalName = '{}[{}:{}]'.format(rname, ptr, ptr)
-        rnames = [signalName]
+        try:
+            ptr = utils.verilogIntConstToInt(x.ptr)
+            signalName = '{}[{}:{}]'.format(rname, ptr, ptr)
+            rnames = [signalName]
+        except Exception:
+            # dynamic index: approximate as an equal mix over all bits
+            width = sigWidths.get(rname, None)
+            if not isinstance(width, int) or width < 1:
+                width = sigWidths.get(x.var.name, None)
+            if not isinstance(width, int) or width < 1:
+                width = sigWidths.get('{}.{}'.format(instance_name, x.var.name), None)
+            if not isinstance(width, int) or width < 1:
+                width = wid if isinstance(wid, int) and wid > 0 else 1
+            rnames = ['Mix'] + ['{}[{}:{}]'.format(rname, j, j) for j in range(width)]
 
     elif isinstance(x, vast.Concat):
         # Keep existing behavior: list of sub-expressions (strings/bit refs)
@@ -255,8 +266,12 @@ def getSigName(ast, instance_name):
         sigName = '{}.{}[{}:{}]'.format(instance_name, ast.var.name, ast.msb, ast.lsb)
     elif isinstance(ast, vast.Pointer):
         sigName = '{}.{}'.format(instance_name, ast.var.name)
-        ptr = ast.ptr;
-        sigName = '{}[{}:{}]'.format(sigName, ptr, ptr)
+        try:
+            ptr = utils.verilogIntConstToInt(ast.ptr)
+            sigName = '{}[{}:{}]'.format(sigName, ptr, ptr)
+        except Exception:
+            width = sigWidths.get(sigName, 1)
+            sigName = ['Mix'] + ['{}[{}:{}]'.format(sigName, j, j) for j in range(width)]
     elif isinstance(ast, vast.Cond):
         cond = getSigName(ast.cond, instance_name)
         tval = getSigName(ast.true_value, instance_name)
@@ -445,22 +460,87 @@ def populateModuleExprMap(module_name, instance_name):
                         high = int(lbits[0])
 
                         if isinstance(rhsAst, vast.Plus):
-                            # bitwise approximate sum without carry for single-bit too
+                            # Carry-aware approximation for additions (handles counter+1 better).
                             def _bits(expr):
                                 try:
                                     return getRnamesExpr(expr, low, high)
                                 except Exception:
                                     return None
-                            if isinstance(rname, list) and len(rname) >= 3:
-                                a_bits = _bits(rname[1])
-                                b_bits = _bits(rname[2])
+
+                            # Identify constant operand if present
+                            const_side = None
+                            try:
+                                if isinstance(rhsAst.left, vast.IntConst):
+                                    const_side = ('left', utils.verilogIntConstToInt(rhsAst.left))
+                                elif isinstance(rhsAst.right, vast.IntConst):
+                                    const_side = ('right', utils.verilogIntConstToInt(rhsAst.right))
+                            except Exception:
+                                const_side = None
+
+                            # Utility ops with simple simplifications
+                            def _xor(a, b):
+                                if isinstance(a, int) and isinstance(b, int):
+                                    return a ^ b
+                                if a == 0:
+                                    return b
+                                if b == 0:
+                                    return a
+                                if a == 1:
+                                    return ['Not', b]
+                                if b == 1:
+                                    return ['Not', a]
+                                return ['Xor', a, b]
+
+                            def _and(a, b):
+                                if isinstance(a, int) and isinstance(b, int):
+                                    return a & b
+                                if a == 0 or b == 0:
+                                    return 0
+                                if a == 1:
+                                    return b
+                                if b == 1:
+                                    return a
+                                return ['And', a, b]
+
+                            def _or(a, b):
+                                if isinstance(a, int) and isinstance(b, int):
+                                    return a | b
+                                if a == 1 or b == 1:
+                                    return 1
+                                if a == 0:
+                                    return b
+                                if b == 0:
+                                    return a
+                                return ['Or', a, b]
+
+                            if const_side is not None:
+                                # Full-adder per bit with a constant
+                                const_val = const_side[1]
+                                other_ast = rhsAst.right if const_side[0] == 'left' else rhsAst.left
+                                other_name = getSigName(other_ast, instance_name)
+                                other_bits = _bits(other_name)
+
+                                carry = 0
+                                for i in range(low, high + 1):
+                                    abit = other_bits[1][i - low] if other_bits and len(other_bits) > 1 else 0
+                                    bbit = (const_val >> (i - low)) & 1
+                                    sum_no_carry = _xor(abit, bbit)
+                                    sum_bit = _xor(sum_no_carry, carry)
+                                    carry_out = _or(_and(abit, bbit), _or(_and(abit, carry), _and(bbit, carry)))
+                                    truthTableMap['{}[{}:{}]'.format(lnameonly, i, i)] = sum_bit
+                                    carry = carry_out
                             else:
-                                a_bits = _bits(rname)
-                                b_bits = None
-                            for i in range(low, high + 1):
-                                abit = a_bits[1][i - low] if a_bits and len(a_bits) > 1 else 0
-                                bbit = b_bits[1][i - low] if b_bits and len(b_bits) > 1 else 0
-                                truthTableMap['{}[{}:{}]'.format(lnameonly, i, i)] = ['Xor', abit, bbit]
+                                # Fallback: bitwise XOR (original approximation)
+                                if isinstance(rname, list) and len(rname) >= 3:
+                                    a_bits = _bits(rname[1])
+                                    b_bits = _bits(rname[2])
+                                else:
+                                    a_bits = _bits(rname)
+                                    b_bits = None
+                                for i in range(low, high + 1):
+                                    abit = a_bits[1][i - low] if a_bits and len(a_bits) > 1 else 0
+                                    bbit = b_bits[1][i - low] if b_bits and len(b_bits) > 1 else 0
+                                    truthTableMap['{}[{}:{}]'.format(lnameonly, i, i)] = ['Xor', abit, bbit]
 
                         elif (lbits[0] == lbits[1]):
                             truthTableMap[lname] = rname
@@ -488,6 +568,7 @@ def populateModuleExprMap(module_name, instance_name):
                                 condName = getSigName(rhsAst.cond, instance_name)
                                 tName = getSigName(rhsAst.true_value, instance_name)
                                 fName = getSigName(rhsAst.false_value, instance_name)
+                                width = high - low + 1
 
                                 def _bit_at(expr_name, idx):
                                     if isinstance(expr_name, int):
@@ -568,14 +649,33 @@ def populateModuleExprMap(module_name, instance_name):
                                             return None
                                     return None
 
-                                def _build_time_chain(idx, depth):
-                                    """Approximate shift over time as an equal mix of successive key bits."""
+                                def _normalize_shift(ref_idx, cur_idx):
+                                    """
+                                    Return (delta, wrap) where delta is the preferred step (positive=right,
+                                    negative=left) and wrap indicates modulo chaining (rotate).
+                                    """
+                                    raw = ref_idx - cur_idx
+                                    k_mod = (ref_idx - cur_idx) % width
+                                    if k_mod == 0:
+                                        return 0, False
+                                    # pick the smaller-magnitude representation
+                                    alt = k_mod if k_mod <= width // 2 else k_mod - width
+                                    wrap = (alt != raw)
+                                    return alt, wrap
+
+                                def _build_shift_chain(idx, shift_delta, depth, wrap, data_expr):
+                                    """Approximate shift/rotate over time as a mix of source bits."""
                                     depth = max(1, depth)
-                                    depth = min(depth, high - idx + 1)
+                                    step_limit = depth
                                     key_bits = []
-                                    for step in range(depth):
-                                        bit_idx = idx + step
-                                        key_bits.append(_bit_at(tName, bit_idx))
+                                    for step in range(step_limit):
+                                        bit_idx = idx + step * shift_delta
+                                        if wrap:
+                                            span = width
+                                            bit_idx = ((bit_idx - low) % span) + low
+                                        elif bit_idx < low or bit_idx > high:
+                                            break
+                                        key_bits.append(_bit_at(data_expr, bit_idx))
                                     if not key_bits:
                                         return 0
                                     return ['Mix'] + key_bits
@@ -585,10 +685,17 @@ def populateModuleExprMap(module_name, instance_name):
                                     expr = bit_exprs.get(i)
                                     if isinstance(expr, list) and expr[0] == 'Cond':
                                         ref_idx = _parse_self_ref(expr[3])
-                                        if ref_idx is not None and ref_idx == i + 1:
-                                            chain_expr = _build_time_chain(i, depth_limit)
-                                            truthTableMap['{}[{}:{}]'.format(lnameonly, i, i)] = chain_expr
-                                            continue
+                                        data_expr = tName
+                                        if ref_idx is None:
+                                            ref_idx = _parse_self_ref(expr[2])
+                                            if ref_idx is not None:
+                                                data_expr = fName
+                                        if ref_idx is not None:
+                                            shift_delta, wrap = _normalize_shift(ref_idx, i)
+                                            if shift_delta != 0:
+                                                chain_expr = _build_shift_chain(i, shift_delta, depth_limit, wrap, data_expr)
+                                                truthTableMap['{}[{}:{}]'.format(lnameonly, i, i)] = chain_expr
+                                                continue
                                     truthTableMap['{}[{}:{}]'.format(lnameonly, i, i)] = expr
                             elif isinstance(rhsAst, vast.Srl):
                                 # logical right shift by constant
@@ -622,36 +729,41 @@ def populateModuleExprMap(module_name, instance_name):
                             else:
                                 # Check if rname is a list (concatenation or operation result)
                                 if isinstance(rname, list):
-                                    # Handle concatenation: rname is [signal1, signal2, signal3, ...]
-                                    # Bits are mapped left-to-right in the list (right-to-left in Verilog)
-                                    bit_index = low
-                                    for concat_elem in rname:
-                                        if isinstance(concat_elem, str):
-                                            if '[' in concat_elem:
-                                                elem_base = concat_elem.split('[')[0]
-                                                elem_range = concat_elem.split('[')[1].split(']')[0]
-                                                if ':' in elem_range:
-                                                    elem_msb, elem_lsb = map(int, elem_range.split(':'))
-                                                    elem_width = elem_msb - elem_lsb + 1
+                                    if rname and rname[0] == 'Mix':
+                                        # Dynamic index select already represented as Mix; reuse it for each dest bit.
+                                        for i in range(low, high + 1):
+                                            truthTableMap['{}[{}:{}]'.format(lnameonly, i, i)] = rname
+                                    else:
+                                        # Handle concatenation: rname is [signal1, signal2, signal3, ...]
+                                        # Bits are mapped left-to-right in the list (right-to-left in Verilog)
+                                        bit_index = low
+                                        for concat_elem in rname:
+                                            if isinstance(concat_elem, str):
+                                                if '[' in concat_elem:
+                                                    elem_base = concat_elem.split('[')[0]
+                                                    elem_range = concat_elem.split('[')[1].split(']')[0]
+                                                    if ':' in elem_range:
+                                                        elem_msb, elem_lsb = map(int, elem_range.split(':'))
+                                                        elem_width = elem_msb - elem_lsb + 1
+                                                    else:
+                                                        elem_lsb = int(elem_range)
+                                                        elem_width = 1
                                                 else:
-                                                    elem_lsb = int(elem_range)
-                                                    elem_width = 1
-                                            else:
-                                                elem_base = concat_elem
-                                                elem_width = sigWidths.get(concat_elem, 1)
-                                                elem_lsb = 0
-                                            for j in range(elem_width):
+                                                    elem_base = concat_elem
+                                                    elem_width = sigWidths.get(concat_elem, 1)
+                                                    elem_lsb = 0
+                                                for j in range(elem_width):
+                                                    if bit_index <= high:
+                                                        src_bit = '{}[{}:{}]'.format(elem_base, elem_lsb + j,
+                                                                                     elem_lsb + j)
+                                                        dest_bit = '{}[{}:{}]'.format(lnameonly, bit_index, bit_index)
+                                                        truthTableMap[dest_bit] = src_bit
+                                                        bit_index += 1
+                                            elif isinstance(concat_elem, int):
                                                 if bit_index <= high:
-                                                    src_bit = '{}[{}:{}]'.format(elem_base, elem_lsb + j,
-                                                                                 elem_lsb + j)
-                                                    dest_bit = '{}[{}:{}]'.format(lnameonly, bit_index, bit_index)
-                                                    truthTableMap[dest_bit] = src_bit
+                                                    truthTableMap['{}[{}:{}]'.format(lnameonly, bit_index,
+                                                                                     bit_index)] = concat_elem
                                                     bit_index += 1
-                                        elif isinstance(concat_elem, int):
-                                            if bit_index <= high:
-                                                truthTableMap['{}[{}:{}]'.format(lnameonly, bit_index,
-                                                                                 bit_index)] = concat_elem
-                                                bit_index += 1
                                 else:
                                     # Handle simple signal assignment
                                     try:
@@ -756,6 +868,20 @@ def subCircuitExtract(input_file_path, top_module_name, ref_module_name, ref_ins
     global moduleWireWidthMap
     global instPortInputsMap
     global instPortOutputsMap
+
+    # reset global state for a fresh run
+    truthTableMap = {}
+    signalNames = set(ref_sig_bit_names[:])  # seed with refs so forward tracing starts non-empty
+    sigWidths = {}
+    moduleAstMap = {}
+    moduleInputPortListMap = {}
+    moduleOutputPortListMap = {}
+    moduleInputPortWidthListMap = {}
+    moduleOutputPortWidthListMap = {}
+    moduleWireExprMap = {}
+    moduleWireWidthMap = {}
+    instPortInputsMap = {}
+    instPortOutputsMap = {}
 
     populateModuleAstMap(input_file_path)
     populateModuleInputOutputPortListMap(moduleAstMap[top_module_name])

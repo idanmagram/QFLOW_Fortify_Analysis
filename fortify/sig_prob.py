@@ -29,7 +29,7 @@ def _key(sig):
 # recursive signal probability and conditional signal probability calculation
 def populateSigProbs(sig, encounteredSigs, s_hat, s_hat_0, s_hat_1, truthTableMap, refSigBitNames, inputSigBitNames):
     key = _key(sig)
-    if key == "top.U_RSA.indata[1:1]":
+    if key == "top.Antena[0:0]":
         print("idna")
 
     # to avoid recomputation of already calculated signal probability values

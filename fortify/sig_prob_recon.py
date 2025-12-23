@@ -55,7 +55,16 @@ def _extract_signal_names(exp):
         op = exp[0]
         if op == "Not":
             return _extract_signal_names(exp[1])
-        return _extract_signal_names(exp[1]) | _extract_signal_names(exp[2])
+        if op == "Mix":
+            out = set()
+            for part in exp[1:]:
+                out |= _extract_signal_names(part)
+            return out
+        # Fallback: union all children beyond op position
+        out = set()
+        for part in exp[1:]:
+            out |= _extract_signal_names(part)
+        return out
     return set()
 
 # ------------------------------------------------------------------
@@ -108,6 +117,15 @@ def prob_with_clamps(sig, truthTableMap, clamps, cache):
         if op == "Not":
             c = exp[1]
             p = 1.0 - prob_with_clamps(c, truthTableMap, clamps, cache)
+            cache[key] = p
+            return p
+        if op == "Mix":
+            parts = exp[1:]
+            if not parts:
+                cache[key] = 0.0
+                return cache[key]
+            ps = [prob_with_clamps(part, truthTableMap, clamps, cache) for part in parts]
+            p = sum(ps) / len(ps)
             cache[key] = p
             return p
         else:
