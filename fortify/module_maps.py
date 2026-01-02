@@ -39,6 +39,8 @@ instPortOutputsMap = {}
 moduleWireExprMap = {}
 # map from module name to wire width
 moduleWireWidthMap = {}
+# bases assigned via sequential (nonblocking) statements
+seqBases = set()
 
 # parses the input Verilog file (along with standard module definitions)
 def populateModuleAstMap(file_path):
@@ -459,6 +461,9 @@ def populateModuleExprMap(module_name, instance_name):
                         low = int(lbits[1])
                         high = int(lbits[0])
 
+                        if isinstance(ast, vast.NonblockingSubstitution):
+                            seqBases.add(lnameonly)
+
                         if isinstance(rhsAst, vast.Plus):
                             # Carry-aware approximation for additions (handles counter+1 better).
                             def _bits(expr):
@@ -574,6 +579,38 @@ def populateModuleExprMap(module_name, instance_name):
                                     if isinstance(expr_name, int):
                                         return expr_name
                                     if isinstance(expr_name, list):
+                                        # Handle concatenation-like lists (no op tag): pick the appropriate element bit
+                                        if expr_name and not isinstance(expr_name[0], str):
+                                            pass  # unlikely pattern
+                                        if expr_name and isinstance(expr_name[0], str) and expr_name[0] not in ("Cond", "Srl", "Plus"):
+                                            # Treat as concatenation elements, LSB-first
+                                            bit_cursor = low
+                                            for elem in expr_name:
+                                                if isinstance(elem, int):
+                                                    if idx == bit_cursor:
+                                                        return elem
+                                                    bit_cursor += 1
+                                                    continue
+                                                if isinstance(elem, str):
+                                                    if '[' in elem:
+                                                        base = elem.split('[')[0]
+                                                        rng = elem.split('[')[1].split(']')[0]
+                                                        if ':' in rng:
+                                                            msb, lsb = map(int, rng.split(':'))
+                                                        else:
+                                                            msb = lsb = int(rng)
+                                                    else:
+                                                        base = elem
+                                                        lsb = 0
+                                                        msb = sigWidths.get(elem, 1) - 1
+                                                    width_elem = msb - lsb + 1
+                                                    if bit_cursor <= idx < bit_cursor + width_elem:
+                                                        sel = lsb + (idx - bit_cursor)
+                                                        return f'{base}[{sel}:{sel}]'
+                                                    bit_cursor += width_elem
+                                                else:
+                                                    bit_cursor += 1
+                                            return 0
                                         # nested conditional or other expression; recurse on branches if it's a Cond
                                         if len(expr_name) == 4 and expr_name[0] == 'Cond':
                                             return ['Cond',
@@ -698,17 +735,34 @@ def populateModuleExprMap(module_name, instance_name):
                                                 continue
                                     truthTableMap['{}[{}:{}]'.format(lnameonly, i, i)] = expr
                             elif isinstance(rhsAst, vast.Srl):
-                                # logical right shift by constant
+                                # logical right shift by constant; if self-referential, build a time-decaying mix to model convergence to 0
                                 try:
                                     shift_amt = utils.verilogIntConstToInt(rhsAst.right)
                                 except Exception:
                                     shift_amt = 0
+                                left_name = getSigName(rhsAst.left, instance_name)
+                                self_shift = isinstance(left_name, str) and left_name.rsplit('[', 1)[0] == lnameonly
                                 for i in range(low, high + 1):
                                     src_idx = i + shift_amt
-                                    if src_idx <= high:
-                                        truthTableMap['{}[{}:{}]'.format(lnameonly, i, i)] = '{}[{}:{}]'.format(lnameonly, src_idx, src_idx)
+                                    if self_shift and shift_amt > 0:
+                                        # Approximate future decay: mix the chain of shifted bits until we run out, then 0
+                                        chain = ['Mix']
+                                        step = 0
+                                        while True:
+                                            cur_idx = i + step * shift_amt
+                                            if cur_idx > high:
+                                                chain.append(0)
+                                                break
+                                            chain.append(f'{lnameonly}[{cur_idx}:{cur_idx}]')
+                                            step += 1
+                                            if step >= SHIFT_UNROLL_LIMIT:
+                                                break
+                                        truthTableMap['{}[{}:{}]'.format(lnameonly, i, i)] = chain
                                     else:
-                                        truthTableMap['{}[{}:{}]'.format(lnameonly, i, i)] = 0
+                                        if src_idx <= high:
+                                            truthTableMap['{}[{}:{}]'.format(lnameonly, i, i)] = '{}[{}:{}]'.format(lnameonly, src_idx, src_idx)
+                                        else:
+                                            truthTableMap['{}[{}:{}]'.format(lnameonly, i, i)] = 0
                             elif isinstance(rhsAst, vast.Plus):
                                 # bitwise approximate sum without carry: sum_i = a_i XOR b_i
                                 def _bits(expr):
@@ -779,6 +833,48 @@ def populateModuleExprMap(module_name, instance_name):
                         pass
                     else:
                         assert(False)
+
+    # Resolve simple self-referential bit chains (e.g., shift-registers) to break cycles without Mix.
+    def _parse_bit(name):
+        if not isinstance(name, str):
+            return None
+        if "[" not in name or ":" not in name or not name.endswith("]"):
+            return None
+        try:
+            base = name.split("[", 1)[0]
+            idx = int(name.split("[", 1)[1].split(":")[0])
+            return base, idx
+        except Exception:
+            return None
+
+    keys = list(truthTableMap.keys())
+    for k in keys:
+        parsed = _parse_bit(k)
+        if not parsed:
+            continue
+        base, idx = parsed
+        val = truthTableMap[k]
+        steps = 0
+        while True:
+            parsed_val = _parse_bit(val) if isinstance(val, str) else None
+            if not parsed_val:
+                break
+            vbase, vidx = parsed_val
+            if vbase != base:
+                break
+            # follow chain
+            next_key = f"{vbase}[{vidx}:{vidx}]"
+            if next_key == k:
+                # direct self loop
+                val = 0
+                break
+            val = truthTableMap.get(next_key, val)
+            steps += 1
+            if steps > 2 * (high - low + 1 if 'high' in locals() else 128):
+                # safety bound: break potential infinite chase
+                val = 0.5
+                break
+        truthTableMap[k] = val
 
 # gets the names of all the signals within a module/instance, including internal modules/instances
 def getInternalSignalNames(module_name, instance_name):
@@ -854,6 +950,117 @@ def getInternalSignalNames(module_name, instance_name):
                 signalName = '{}[{}:{}]'.format(sig, j, j)
                 signalNames.add(signalName)
 
+# Build a time-unrolled truth table map for looped signals only, depth H (LHS at t+1 from RHS at t).
+def build_time_unrolled_truth_table(truthTableMap, H=0):
+    def _base(sig):
+        if not isinstance(sig, str):
+            return None
+        return sig.split("[", 1)[0] if "[" in sig else sig
+
+    def _expr_refs_base(expr, base):
+        if isinstance(expr, str):
+            return _base(expr) == base
+        if isinstance(expr, list):
+            return any(_expr_refs_base(e, base) for e in expr)
+        return False
+
+    loop_bases = { _base(k) for k, v in truthTableMap.items() if _expr_refs_base(v, _base(k)) }
+    seq_bases = set(seqBases)
+    loop_keys = {k for k in truthTableMap.keys() if _base(k) in loop_bases or _base(k) in seq_bases}
+    # keys that depend on loop/seq bases (fanout aliases)
+    def _expr_bases(expr):
+        if isinstance(expr, str):
+            b = _base(expr)
+            return {b} if b else set()
+        if isinstance(expr, list):
+            out = set()
+            for e in expr[1:]:
+                out |= _expr_bases(e)
+            return out
+        return set()
+    dep_keys = {k for k, v in truthTableMap.items() if _expr_bases(v) & (loop_bases | seq_bases)}
+
+    def _rewrite(expr, t):
+        if isinstance(expr, int):
+            return expr
+        if isinstance(expr, str):
+            b = _base(expr)
+            return f"{expr}@{t}" if b in loop_bases or b in seq_bases else expr
+        if isinstance(expr, list):
+            return [expr[0]] + [_rewrite(e, t) for e in expr[1:]]
+        return expr
+
+    def _expand_eq(expr):
+        if not isinstance(expr, list):
+            return expr
+        op = expr[0]
+        if op == "Eq":
+            a, b = expr[1], expr[2]
+            def _bits(x):
+                if isinstance(x, str) and "[" in x and ":" in x and x.endswith("]"):
+                    try:
+                        base = x.split("[",1)[0]
+                        rng = x.split("[",1)[1].split("]")[0]
+                        msb, lsb = map(int, rng.split(":"))
+                        return [f"{base}[{i}:{i}]" for i in range(lsb, msb+1)]
+                    except Exception:
+                        return None
+                return None
+            abits = _bits(a)
+            bbits = _bits(b)
+            base_a = _base(a) if abits else None
+            base_b = _base(b) if bbits else None
+            loop_a = base_a in loop_bases if base_a else False
+            loop_b = base_b in loop_bases if base_b else False
+            if abits and bbits and len(abits)==len(bbits):
+                if loop_a or loop_b:
+                    terms = [["Eq", ai, bi] for ai, bi in zip(abits, bbits)]
+                    acc = terms[0]
+                    for t in terms[1:]:
+                        acc = ["And", acc, t]
+                    return acc
+                else:
+                    return ["EqBus", a, b, 0.0001]
+            elif abits and isinstance(b, int):
+                bits = [ (b >> i) & 1 for i in range(len(abits)) ]
+                if loop_a:
+                    terms = [["Eq", ai, bits[i]] for i, ai in enumerate(abits)]
+                    acc = terms[0]
+                    for t in terms[1:]:
+                        acc = ["And", acc, t]
+                    return acc
+                else:
+                    return ["EqBus", a, b, 0.0001]
+            else:
+                return expr
+        return [expr[0]] + [_expand_eq(e) for e in expr[1:]]
+
+    unrolled = dict(truthTableMap)  # keep originals for non-looped signals
+    sigs = set()
+
+    for key, expr in truthTableMap.items():
+        base = _base(key)
+        if (base in loop_bases or base in seq_bases) and key in loop_keys:
+            for t in range(H):
+                lhs = f"{key}@{t+1}"
+                rhs = _rewrite(expr, t)
+                rhs = _expand_eq(rhs)
+                unrolled[lhs] = rhs
+                sigs.add(lhs)
+        elif key in dep_keys:
+            for t in range(H + 1):
+                lhs = f"{key}@{t}"
+                rhs = _rewrite(expr, t)
+                rhs = _expand_eq(rhs)
+                unrolled[lhs] = rhs
+                sigs.add(lhs)
+        else:
+            lhs = key
+            rhs = _expand_eq(expr)
+            unrolled[lhs] = rhs
+            sigs.add(lhs)
+    return unrolled, sigs
+
 # main function to extract the sub-circuit of the design which is influenced by the reference signal bits
 def subCircuitExtract(input_file_path, top_module_name, ref_module_name, ref_instance_name, ref_sig_bit_names):
     global truthTableMap
@@ -868,6 +1075,7 @@ def subCircuitExtract(input_file_path, top_module_name, ref_module_name, ref_ins
     global moduleWireWidthMap
     global instPortInputsMap
     global instPortOutputsMap
+    global seqBases
 
     # reset global state for a fresh run
     truthTableMap = {}
@@ -882,6 +1090,7 @@ def subCircuitExtract(input_file_path, top_module_name, ref_module_name, ref_ins
     moduleWireWidthMap = {}
     instPortInputsMap = {}
     instPortOutputsMap = {}
+    seqBases = set()
 
     populateModuleAstMap(input_file_path)
     populateModuleInputOutputPortListMap(moduleAstMap[top_module_name])

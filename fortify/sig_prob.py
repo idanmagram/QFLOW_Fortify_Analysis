@@ -29,24 +29,19 @@ def _key(sig):
 # recursive signal probability and conditional signal probability calculation
 def populateSigProbs(sig, encounteredSigs, s_hat, s_hat_0, s_hat_1, truthTableMap, refSigBitNames, inputSigBitNames):
     key = _key(sig)
-    if key == "top.Antena[0:0]":
+    fallback = 0.5
+    if key == "top.tro.lfsr1.lfsr[5:5]":
         print("idna")
 
     # to avoid recomputation of already calculated signal probability values
     if key in s_hat:
         return
 
-    #if not (isinstance(key, int)) and "state" in key:
-    #    print("Lior")
     # to avoid infinite recursion caused by circular dependencies, assigning zero signal probabilities
     if key in encounteredSigs:
-        print("Circular dependency:", sig)
-        s_hat[key] = 0.5
-        s_hat_0[key] = {}
-        s_hat_1[key] = {}
-        for ref in refSigBitNames:
-            s_hat_0[key][ref] = 0.5
-            s_hat_1[key][ref] = 0.5
+        s_hat[key] = fallback
+        s_hat_0[key] = {ref: fallback for ref in refSigBitNames}
+        s_hat_1[key] = {ref: fallback for ref in refSigBitNames}
         return
 
     encounteredSigs.add(key)
@@ -54,7 +49,7 @@ def populateSigProbs(sig, encounteredSigs, s_hat, s_hat_0, s_hat_1, truthTableMa
     # Expression nodes (e.g., Eq, Cond) that are not standalone signals
     if isinstance(sig, list):
         op = sig[0]
-        known_ops = {"Cond", "Not", "Mix", "And", "Or", "Xor", "Eq", "NotEq", "Srl", "Sll", "Plus", "Times", "Minus"}
+        known_ops = {"Cond", "Not", "Mix", "And", "Or", "Xor", "Eq", "NotEq", "Srl", "Sll", "Plus", "Times", "Minus", "EqVec", "EqBus"}
         if op not in known_ops:
             # Treat as pass-through of first element if unrecognized op (e.g., concatenation artifacts)
             target = op
@@ -90,6 +85,94 @@ def populateSigProbs(sig, encounteredSigs, s_hat, s_hat_0, s_hat_1, truthTableMa
                 #p1 = 0.5
                 s_hat_0[key][ref] = p0 * s_hat_0[_key(tval)][ref] + (1 - p0) * s_hat_0[_key(fval)][ref]
                 s_hat_1[key][ref] = p1 * s_hat_1[_key(tval)][ref] + (1 - p1) * s_hat_1[_key(fval)][ref]
+            return
+        if op == "EqVec":
+            bits_a = sig[1]
+            bits_b = sig[2]
+            floor = sig[3] if len(sig) > 3 else 0.0
+            eqps = []
+            eqps0 = {ref: [] for ref in refSigBitNames}
+            eqps1 = {ref: [] for ref in refSigBitNames}
+            for a_elem, b_elem in zip(bits_a, bits_b):
+                populateSigProbs(a_elem, encounteredSigs, s_hat, s_hat_0, s_hat_1, truthTableMap, refSigBitNames, inputSigBitNames)
+                if not isinstance(b_elem, int):
+                    populateSigProbs(b_elem, encounteredSigs, s_hat, s_hat_0, s_hat_1, truthTableMap, refSigBitNames, inputSigBitNames)
+                pa = s_hat.get(_key(a_elem), 0.5)
+                pb = b_elem if isinstance(b_elem, int) else s_hat.get(_key(b_elem), 0.5)
+                eqp = pa * pb + (1 - pa) * (1 - pb)
+                eqps.append(eqp)
+                for ref in refSigBitNames:
+                    pa0 = s_hat_0.get(_key(a_elem), {}).get(ref, 0.5)
+                    pa1 = s_hat_1.get(_key(a_elem), {}).get(ref, 0.5)
+                    pb0 = b_elem if isinstance(b_elem, int) else s_hat_0.get(_key(b_elem), {}).get(ref, 0.5)
+                    pb1 = b_elem if isinstance(b_elem, int) else s_hat_1.get(_key(b_elem), {}).get(ref, 0.5)
+                    eqp0 = pa0 * pb0 + (1 - pa0) * (1 - pb0)
+                    eqp1 = pa1 * pb1 + (1 - pa1) * (1 - pb1)
+                    eqps0[ref].append(eqp0)
+                    eqps1[ref].append(eqp1)
+            val = min(eqps) if eqps else 0.5
+            val = max(val, floor)
+            s_hat[key] = val
+            s_hat_0[key] = {}
+            s_hat_1[key] = {}
+            for ref in refSigBitNames:
+                v0 = min(eqps0[ref]) if eqps0[ref] else 0.5
+                v1 = min(eqps1[ref]) if eqps1[ref] else 0.5
+                s_hat_0[key][ref] = max(v0, floor)
+                s_hat_1[key][ref] = max(v1, floor)
+            return
+        if op == "EqBus":
+            a = sig[1]
+            b = sig[2]
+            floor = sig[3] if len(sig) > 3 else 0.0
+            def _bits(x):
+                if isinstance(x, str) and "[" in x and ":" in x and x.endswith("]"):
+                    try:
+                        base = x.split("[",1)[0]
+                        rng = x.split("[",1)[1].split("]")[0]
+                        msb, lsb = map(int, rng.split(":"))
+                        return [f"{base}[{i}:{i}]" for i in range(lsb, msb+1)]
+                    except Exception:
+                        return None
+                return None
+            abits = _bits(a)
+            bbits = _bits(b) if isinstance(b, str) else None
+            if abits is None:
+                s_hat[key] = floor
+                s_hat_0[key] = {ref: floor for ref in refSigBitNames}
+                s_hat_1[key] = {ref: floor for ref in refSigBitNames}
+                return
+            eqps = []
+            eqps0 = {ref: [] for ref in refSigBitNames}
+            eqps1 = {ref: [] for ref in refSigBitNames}
+            for idx, abit in enumerate(abits):
+                bbit = bbits[idx] if bbits and idx < len(bbits) else ((b >> idx) & 1 if isinstance(b, int) else b)
+                populateSigProbs(abit, encounteredSigs, s_hat, s_hat_0, s_hat_1, truthTableMap, refSigBitNames, inputSigBitNames)
+                if isinstance(bbit, str):
+                    populateSigProbs(bbit, encounteredSigs, s_hat, s_hat_0, s_hat_1, truthTableMap, refSigBitNames, inputSigBitNames)
+                pa = s_hat.get(_key(abit), 0.5)
+                pb = bbit if isinstance(bbit, int) else s_hat.get(_key(bbit), 0.5)
+                eqp = pa * pb + (1 - pa) * (1 - pb)
+                eqps.append(eqp)
+                for ref in refSigBitNames:
+                    pa0 = s_hat_0.get(_key(abit), {}).get(ref, 0.5)
+                    pa1 = s_hat_1.get(_key(abit), {}).get(ref, 0.5)
+                    pb0 = bbit if isinstance(bbit, int) else s_hat_0.get(_key(bbit), {}).get(ref, 0.5)
+                    pb1 = bbit if isinstance(bbit, int) else s_hat_1.get(_key(bbit), {}).get(ref, 0.5)
+                    eqp0 = pa0 * pb0 + (1 - pa0) * (1 - pb0)
+                    eqp1 = pa1 * pb1 + (1 - pa1) * (1 - pb1)
+                    eqps0[ref].append(eqp0)
+                    eqps1[ref].append(eqp1)
+            val = min(eqps) if eqps else 0.5
+            val = max(val, floor)
+            s_hat[key] = val
+            s_hat_0[key] = {}
+            s_hat_1[key] = {}
+            for ref in refSigBitNames:
+                v0 = min(eqps0[ref]) if eqps0[ref] else 0.5
+                v1 = min(eqps1[ref]) if eqps1[ref] else 0.5
+                s_hat_0[key][ref] = max(v0, floor)
+                s_hat_1[key][ref] = max(v1, floor)
             return
 
         if op == "Not":
@@ -224,32 +307,67 @@ def populateSigProbs(sig, encounteredSigs, s_hat, s_hat_0, s_hat_1, truthTableMa
 
         if isinstance(sig, str) and '[' in sig and ':' in sig:
             try:
-                base = sig.split('[')[0]
-                rng = sig.split('[')[1].split(']')[0]
-                msb, lsb = map(int, rng.split(':'))
+                # Separate the base name and the suffix (if any)
+                # Example: 'top.U_RSA.exp[31:0]@22' -> base_part='top.U_RSA.exp', rest='31:0]@22'
+                base_part, rest = sig.split('[', 1)
+
+                # Split the range from the suffix
+                # Example: '31:0]@22' -> rng_str='31:0', suffix='@22'
+                rng_str, suffix = rest.split(']', 1)
+
+                msb, lsb = map(int, rng_str.split(':'))
                 bits = range(lsb, msb + 1)
+                num_bits = len(bits)  # Store the count for averaging
                 p = 1.0
-                p0 = {ref: 1.0 for ref in refSigBitNames}
-                p1 = {ref: 1.0 for ref in refSigBitNames}
+                p0 = {ref: 1 for ref in refSigBitNames}
+                p1 = {ref: 1 for ref in refSigBitNames}
+
                 for i in bits:
-                    bitname = f"{base}[{i}:{i}]"
-                    populateSigProbs(bitname, encounteredSigs, s_hat, s_hat_0, s_hat_1, truthTableMap, refSigBitNames, inputSigBitNames)
+                    # Reconstruct the bitname including the suffix
+                    # Example: 'top.U_RSA.exp[0:0]@22'
+                    bitname = f"{base_part}[{i}:{i}]{suffix}"
+
+                    populateSigProbs(bitname, encounteredSigs, s_hat, s_hat_0, s_hat_1,
+                                     truthTableMap, refSigBitNames, inputSigBitNames)
+                    #print("bitname 1:", bitname, " p = ",s_hat.get(_key(bitname), 0.5))
+
                     p *= s_hat.get(_key(bitname), 0.5)
                     for ref in refSigBitNames:
-                        p0[ref] *= s_hat_0.get(_key(bitname), {}).get(ref, 0.5)
-                        p1[ref] *= s_hat_1.get(_key(bitname), {}).get(ref, 0.5)
-                prod = p
+                        p0[ref] = min(s_hat_0.get(_key(bitname), {}).get(ref, 0.5),p0[ref])
+                        p1[ref] = min(s_hat_1.get(_key(bitname), {}).get(ref, 0.5),p1[ref])
+                    #for ref in refSigBitNames:
+                        # Summing the probabilities
+                    #    p0[ref] += s_hat_0.get(_key(bitname), {}).get(ref, 0.5)
+                    #    p1[ref] += s_hat_1.get(_key(bitname), {}).get(ref, 0.5)
+
+                #prod = p
+                if "top.U_RSA.exp[31:0]@5" in sig:
+                    print("hi")
+
+                #if num_bits > 0:
+                #    for ref in refSigBitNames:
+                #        p0[ref] /= num_bits
+                #        p1[ref] /= num_bits
+
                 prod0 = p0
                 prod1 = p1
+                bitname = f"{base_part}[{0}:{0}]{suffix}"
+                prod = s_hat.get(_key(bitname), 0.5)
+
+                #print("final prod:", prod, "s_hat_0 ",prod0, "s_hat_1 ",s_hat_1)
+
             except Exception:
                 prod = None
 
+        #print("final prod:", prod, " for ", sig)
         if prod is None:
             s_hat[key] = 0.5 if sig not in (0, 1) else sig
             s_hat_0[key] = {ref: s_hat[key] for ref in refSigBitNames}
             s_hat_1[key] = {ref: s_hat[key] for ref in refSigBitNames}
         else:
-            pmin = 0.25
+            pmin = 0.0000000001
             s_hat[key] = max(prod, pmin)
-            s_hat_0[key] = {ref: max(prod0[ref], pmin) for ref in refSigBitNames}
-            s_hat_1[key] = {ref: max(prod1[ref], pmin) for ref in refSigBitNames}
+            #s_hat_0[key] = {ref: max(prod0[ref], pmin) for ref in refSigBitNames}
+            #s_hat_1[key] = {ref: max(prod1[ref], pmin) for ref in refSigBitNames}
+            s_hat_0[key] = {ref: s_hat[key] for ref in refSigBitNames}
+            s_hat_1[key] = {ref: s_hat[key] for ref in refSigBitNames}
