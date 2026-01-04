@@ -643,6 +643,7 @@ def populateModuleExprMap(module_name, instance_name):
                                 condName = getSigName(rhsAst.cond, instance_name)
                                 tName = getSigName(rhsAst.true_value, instance_name)
                                 fName = getSigName(rhsAst.false_value, instance_name)
+                                print("fName = {}".format(fName))
                                 width = high - low + 1
 
                                 def _bit_at(expr_name, idx):
@@ -771,7 +772,10 @@ def populateModuleExprMap(module_name, instance_name):
                                     return alt, wrap
 
                                 def _build_shift_chain(idx, shift_delta, depth, wrap, data_expr):
-                                    """Approximate shift/rotate over time as a mix of source bits."""
+                                    """
+                                    Approximate shift/rotate over time as a mix of source bits.
+                                    If the shift walks off the bus (non-rotating), terminate with 0.
+                                    """
                                     depth = max(1, depth)
                                     key_bits = []
                                     for step in range(depth):
@@ -780,6 +784,7 @@ def populateModuleExprMap(module_name, instance_name):
                                             span = width
                                             bit_idx = ((bit_idx - low) % span) + low
                                         elif bit_idx < low or bit_idx > high:
+                                            key_bits.append(0)
                                             break
                                         key_bits.append(_bit_at(data_expr, bit_idx))
                                     if not key_bits:
