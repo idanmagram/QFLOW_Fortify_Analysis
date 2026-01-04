@@ -30,7 +30,7 @@ def _key(sig):
 def populateSigProbs(sig, encounteredSigs, s_hat, s_hat_0, s_hat_1, truthTableMap, refSigBitNames, inputSigBitNames):
     key = _key(sig)
     fallback = 0.5
-    if key == "top.tro.lfsr1.lfsr[5:5]":
+    if key == "top.tro.lfsr1.lfsr_stream[0:0]":
         print("idna")
 
     # to avoid recomputation of already calculated signal probability values
@@ -234,12 +234,12 @@ def populateSigProbs(sig, encounteredSigs, s_hat, s_hat_0, s_hat_1, truthTableMa
 
         elif isinstance(exp, str):
             populateSigProbs(exp, encounteredSigs, s_hat, s_hat_0, s_hat_1, truthTableMap, refSigBitNames, inputSigBitNames)
-            s_hat[key] = s_hat[exp]
+            s_hat[key] = s_hat.get(exp, 0.5)
             s_hat_0[key] = {}
             s_hat_1[key] = {}
             for ref in refSigBitNames:
-                s_hat_0[key][ref] = s_hat_0[exp][ref]
-                s_hat_1[key][ref] = s_hat_1[exp][ref]
+                s_hat_0[key][ref] = s_hat_0.get(exp, {}).get(ref, 0.5)
+                s_hat_1[key][ref] = s_hat_1.get(exp, {}).get(ref, 0.5)
 
         # for expressions corresponding to a logical operation (gate) like Not, And, Or, Xor,
         # we calculate the signal probability recursively from the signal probabilities

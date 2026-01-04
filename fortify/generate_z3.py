@@ -257,6 +257,12 @@ def _combine_with_guard(cond, guard):
 
 def _collect_guarded_assigns(stmt, guard, acc):
     """Collect assignments under their guard from an Always statement."""
+    # DEBUG
+    try:
+        with open("debug_recurse.txt", "a") as df:
+            df.write(f"In _collect_guarded_assigns: stmt type {type(stmt)}\n")
+    except: pass
+
     if isinstance(stmt, vast.Block):
         for s in stmt.statements:
             _collect_guarded_assigns(s, guard, acc)
@@ -265,6 +271,11 @@ def _collect_guarded_assigns(stmt, guard, acc):
         rhs = stmt.right.var
         acc.setdefault(target, []).append((guard, rhs))
     elif isinstance(stmt, vast.IfStatement):
+        # DEBUG: Trace IfStatement
+        try:
+            with open("debug_recurse.txt", "a") as df:
+                df.write(f"In IfStatement: cond type {type(stmt.cond)}\n")
+        except: pass
         cond = stmt.cond
 
         # --- FIXED BLOCK START ---
@@ -331,7 +342,7 @@ def processBlockingSubstitution(statementAst, nameExprMap, nameWidthMap, functio
     if isinstance(lhsAst, vast.Identifier):
         rhsExpr = truncateExprToWidth(rhsExpr, nameWidthMap[functionName + '.' + lhsAst.name])
         nameExprMap[functionName + '.' + lhsAst.name] = rhsExpr
-
+    
     elif isinstance(lhsAst, vast.Pointer):
         assert(isinstance(lhsAst.var, vast.Identifier))
         assert(isinstance(lhsAst.ptr, vast.IntConst))
@@ -622,6 +633,8 @@ def generateModuleMaps(moduleAst, moduleInputPortListMap, moduleOutputPortListMa
             print('Warning: Not handling', type(ast), 'file: generate_z3.py', 'line no.:', utils.getLineNumber())
 
     # populate graph with assign statements and module instantiations
+    sequential_nodes = []
+    
     for ast in moduleAst.items:
         if isinstance(ast, vast.Assign):
             updateAssignGraph(assignGraph, ast)
@@ -632,7 +645,13 @@ def generateModuleMaps(moduleAst, moduleInputPortListMap, moduleOutputPortListMa
             for lhsAst, assign_list in guarded_assigns.items():
                 mux_expr = _guards_to_mux(assign_list)
                 nb = vast.NonblockingSubstitution(vast.Lvalue(lhsAst), vast.Rvalue(mux_expr))
-                updateAssignGraph(assignGraph, nb)
+                
+                # Separate these from graph to avoid cycles (seq logic depends on combinational, calculated after)
+                lhs_ids = getIdentifiers(lhsAst)
+                node_name = lhs_ids[0] if lhs_ids else "seq_block"
+                seq_node = graph.GraphNode(f"seq_{node_name}")
+                seq_node.addIncomingEdge(0, nb) # 0 is dummy srcId
+                sequential_nodes.append(seq_node)
 
         elif isinstance(ast, vast.InstanceList):
             for instAst in ast.instances:
@@ -640,5 +659,8 @@ def generateModuleMaps(moduleAst, moduleInputPortListMap, moduleOutputPortListMa
 
     # do topological sort on graph
     topSortNodes = assignGraph.topSort()
+    
+    # Append sequential nodes at the end
+    topSortNodes.extend(sequential_nodes)
 
     return nameExprMap, nameWidthMap, topSortNodes
