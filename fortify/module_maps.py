@@ -643,7 +643,7 @@ def populateModuleExprMap(module_name, instance_name):
                                 condName = getSigName(rhsAst.cond, instance_name)
                                 tName = getSigName(rhsAst.true_value, instance_name)
                                 fName = getSigName(rhsAst.false_value, instance_name)
-                                print("fName = {}".format(fName))
+                                #print("condName ", condName, "  tName", tName, "  fName", fName )
                                 width = high - low + 1
 
                                 def _bit_at(expr_name, idx):
@@ -748,14 +748,29 @@ def populateModuleExprMap(module_name, instance_name):
                                             fbit = fbit[2]
                                     bit_exprs[i] = ['Cond', condName, tbit, fbit]
 
-                                def _parse_self_ref(expr):
-                                    """Return bit index if expr is a self-reference to lnameonly[idx:idx]."""
+                                def _parse_self_ref(expr, cur_idx=None):
+                                    """Return bit index if expr is (or contains) a self-reference to lnameonly[bit]."""
                                     if isinstance(expr, str) and expr.startswith(lnameonly + "["):
                                         try:
-                                            idx_str = expr.split("[", 1)[1].split(":", 1)[0]
-                                            return int(idx_str)
+                                            rng = expr.split("[", 1)[1].split("]", 1)[0]
+                                            if ":" in rng:
+                                                msb, lsb = map(int, rng.split(":"))
+                                                # single-bit slice
+                                                if msb == lsb:
+                                                    return lsb
+                                                # if we know the dest bit, map by offset from lsb
+                                                if cur_idx is not None:
+                                                    return lsb + (cur_idx - low)
+                                                return msb
+                                            else:
+                                                return int(rng)
                                         except (IndexError, ValueError):
                                             return None
+                                    if isinstance(expr, list):
+                                        for e in expr[1:]:
+                                            idx = _parse_self_ref(e, cur_idx)
+                                            if idx is not None:
+                                                return idx
                                     return None
 
                                 def _normalize_shift(ref_idx, cur_idx):
@@ -784,26 +799,62 @@ def populateModuleExprMap(module_name, instance_name):
                                             span = width
                                             bit_idx = ((bit_idx - low) % span) + low
                                         elif bit_idx < low or bit_idx > high:
+                                            print(f"[shift-chain] {lnameonly}[{idx}] -> off-bus at step {step}, appending 0")
                                             key_bits.append(0)
                                             break
-                                        key_bits.append(_bit_at(data_expr, bit_idx))
+                                        src_bit = _bit_at(data_expr, bit_idx)
+                                        print(f"[shift-chain] {lnameonly}[{idx}] step {step} uses {src_bit}")
+                                        key_bits.append(src_bit)
                                     if not key_bits:
                                         return 0
                                     return ['Mix'] + key_bits
 
                                 depth_limit = min(SHIFT_UNROLL_LIMIT, high - low + 1)
+                                print(f"[shift-chain-scan] Scanning {lnameonly} bits {low}..{high}")
+                                if lnameonly == "top.U_RSA.exp":
+                                    print("KK")
                                 for i in range(low, high + 1):
                                     expr = bit_exprs.get(i)
+                                    # print(f"  Bit {i} expr: {expr}")
                                     if isinstance(expr, list) and expr[0] == 'Cond':
-                                        ref_idx = _parse_self_ref(expr[3])
-                                        data_expr = tName
-                                        if ref_idx is None:
-                                            ref_idx = _parse_self_ref(expr[2])
-                                            if ref_idx is not None:
-                                                data_expr = fName
-                                        # Only treat as pure shift if the data expression is the same bus (true self-shift).
-                                        if ref_idx is not None and isinstance(data_expr, str) and data_expr.startswith(lnameonly):
-                                            shift_delta, wrap = _normalize_shift(ref_idx, i)
+                                        # Identify hold branch (self[i]) to determine shift direction from the other branch
+                                        hold_idx_false = _parse_self_ref(expr[3], i)
+                                        hold_idx_true  = _parse_self_ref(expr[2], i)
+                                        ref_idx_false  = hold_idx_false
+                                        ref_idx_true   = hold_idx_true
+                                        
+                                        src_idx = None
+                                        data_expr = None
+                                        
+                                        if hold_idx_false == i:
+                                            # False is hold, True is change/shift
+                                            data_expr = tName
+                                            src_idx = _parse_self_ref(expr[2], i)
+                                        elif hold_idx_true == i:
+                                            # True is hold, False is change/shift
+                                            data_expr = fName
+                                            src_idx = _parse_self_ref(expr[3], i)
+                                        elif ref_idx_true is not None and ref_idx_true != i and expr[3] == 0:
+                                            # No explicit hold, but true branch shifts from another bit; false branch is 0
+                                            data_expr = tName
+                                            src_idx = ref_idx_true
+                                        elif ref_idx_false is not None and ref_idx_false != i and expr[2] == 0:
+                                            # No explicit hold, but false branch shifts from another bit; true branch is 0
+                                            data_expr = fName
+                                            src_idx = ref_idx_false
+                                        elif ref_idx_false is not None and ref_idx_false != i and data_expr is None:
+                                            # Branch uses another bit; assume shift from that branch
+                                            data_expr = fName
+                                            src_idx = ref_idx_false
+                                        elif ref_idx_true is not None and ref_idx_true != i and data_expr is None:
+                                            data_expr = tName
+                                            src_idx = ref_idx_true
+                                        
+                                        print(f"  [shift-chain-eval] bit {i}: hold_false={hold_idx_false} hold_true={hold_idx_true} => src_idx={src_idx}")
+
+                                        if src_idx is not None:
+                                            print(f"[shift-chain-detect] {lnameonly}[{i}] hold branch detected; src_idx={src_idx} data_expr={data_expr}")
+                                            shift_delta, wrap = _normalize_shift(src_idx, i)
                                             if shift_delta != 0:
                                                 chain_expr = _build_shift_chain(i, shift_delta, depth_limit, wrap, data_expr)
                                                 truthTableMap['{}[{}:{}]'.format(lnameonly, i, i)] = chain_expr
