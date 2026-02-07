@@ -3,22 +3,28 @@ import argparse
 from collections import defaultdict
 import module_maps
 import os
+import sig_prob
 import sig_prob_recon
 from tqdm import tqdm
 import time
 from datetime import datetime
+UNROLL_DEPTH = 32
+
 
 
 sys.setrecursionlimit(100000)
 
 
 def estimate_c_and_pbv_from_conditional_probs(s_hat_0, s_hat_1, s_hat,
-                                              refSigBitNames, signalNames):
+                                              refSigBitNames, signalNames, target_signals=None):
     channel_C = defaultdict(lambda: defaultdict(float))  # C[h][y]
     joint_J   = defaultdict(lambda: defaultdict(float))  # J[y][h]
     results   = {}
+    signals_to_check = target_signals if target_signals is not None else signalNames
 
-    for sig in signalNames:
+    for sig in signals_to_check:
+        if not isinstance(sig, str):
+            continue
         if sig in refSigBitNames:
             continue
         for ref in refSigBitNames:
@@ -45,21 +51,20 @@ def estimate_c_and_pbv_from_conditional_probs(s_hat_0, s_hat_1, s_hat,
 
             pbv = sum(max(joint_J[y][0], joint_J[y][1]) for y in [0, 1])
             leakage = pbv / max(prior_0, prior_1)
-            results[(sig, ref)] = {'PBV': pbv, 'Leakage': leakage}
+            results[(sig, ref)] = {'PBV': pbv, 'Leakage': leakage, 'prior': max(prior_0, prior_1)}
+            #print()
+            #print('PBV', pbv, 'Leakage', leakage)
 
     return results
 
-
 def main(input_file_path, top_module_name, ref_module_name, ref_instance_name,
-         ref_sig_name, ref_sig_width, design, leaks_file_path, time_file_path):
+         ref_sig_name, ref_sig_width, design, leaks_file_path, time_file_path,
+         reconvergence_aware=False):
     startTime = time.time()
 
     print("\n ******************************************************************")
     print("Design:", design, "\n")
     os.environ["PATH"] = r"C:\iverilog\bin;" + os.environ["PATH"]
-
-    # reference signal bit names
-    refSigBitNames = [f'{ref_sig_name}[{j}:{j}]' for j in range(ref_sig_width)]
 
     # static analysis → graph + subcircuit
     (inputNames, inputWidths,
@@ -67,30 +72,44 @@ def main(input_file_path, top_module_name, ref_module_name, ref_instance_name,
      truthTableMap) = module_maps.subCircuitExtract(
         input_file_path, top_module_name,
         ref_module_name, ref_instance_name,
-        refSigBitNames
+        [f'{ref_sig_name}[{j}:{j}]' for j in range(ref_sig_width)]
     )
-    print("inputNames ",inputNames)
-    # input signal bits names
+    # time-unroll looped signals to depth UNROLL_DEPTH
+    truthTableMap, signalNames_unrolled = module_maps.build_time_unrolled_truth_table(truthTableMap, H=UNROLL_DEPTH)
+
+    # time-index reference bits (treated as looped secrets)
+    refSigBitNames = []
+
+    for j in range(ref_sig_width):
+        refSigBitNames.append(f'{ref_sig_name}[{j}:{j}]')
+    signalNames = set(signalNames_unrolled) | set(refSigBitNames)
+
+    with open("truthTableMap.txt", "w") as f:
+        print("truthTableMap 1", truthTableMap, file=f)
+
+    # input signal bits names (time-indexed to match unrolled map)
     inputSigBitNames = []
     for inp, wid in zip(inputNames, inputWidths):
-        inputSigBitNames.extend([f'{inp}[{i}:{i}]' for i in range(wid)])
-    # === Build depinfo (ancestors / fanout / depth) for reconvergence handling ===
-    depinfo = sig_prob_recon.build_dependency_info(truthTableMap, list(set(signalNames) | set(inputNames)))
+        for t in range(UNROLL_DEPTH + 1):
+            inputSigBitNames.extend([f'{inp}[{i}:{i}]@{t}' for i in range(wid)])
 
-    # Simple factorized prior over inputs (customize if you have a better prior)
     prior = {name: 0.5 for name in inputSigBitNames}
 
-    # maps to store signal probability and conditional signal probability values
-    s_hat   = {}
+    s_hat = {}
     s_hat_0 = {}
     s_hat_1 = {}
 
     # initialise priors for input bits
     for sig in inputSigBitNames:
-        s_hat[sig] = prior.get(sig, 0.5)
+        base = sig.split("@")[0]
+        s_hat[sig] = prior.get(base, 0.5)
         s_hat_0[sig] = {ref: 0.5 for ref in refSigBitNames}
         s_hat_1[sig] = {ref: 0.5 for ref in refSigBitNames}
-
+        if "rst" in sig:
+            s_hat[sig] = prior.get(base, 0.5)
+            s_hat_0[sig] = {ref: 0.5 for ref in refSigBitNames}
+            s_hat_1[sig] = {ref: 0.5 for ref in refSigBitNames}
+    # print("signalNames ",signalNames)
     # initialise leakage scores of reference signal bits
     for sig in signalNames:
         if sig in refSigBitNames:
@@ -104,36 +123,76 @@ def main(input_file_path, top_module_name, ref_module_name, ref_instance_name,
                     s_hat_0[sig][ref] = 0.0
                     s_hat_1[sig][ref] = 1.0
 
-    # signal probability and conditional probability calculation (dependency-aware)
-    todo = sum(1 for s in signalNames if s not in s_hat)
+
     done = 0
 
-    for sig in tqdm(signalNames, desc="Signal Probability Calculation"):
-        if sig not in s_hat:
-            sig_prob_recon.populateSigProbs(
-                sig, set(), s_hat, s_hat_0, s_hat_1,
-                truthTableMap, refSigBitNames, inputSigBitNames, inputNames,
-                depinfo=depinfo, prior_map_or_callable=prior, max_cut=3)
+    if reconvergence_aware:
+        print("reconnnnnn")
+        sig_prob_recon.populateSigProbs_recon_dp(
+            signalNames, s_hat, s_hat_0, s_hat_1,
+            truthTableMap, refSigBitNames, inputSigBitNames
+        )
+    else:
+        for sig in tqdm(signalNames, desc="Signal Probability Calculation"):
+            if sig not in s_hat:
+                sig_prob.populateSigProbs(
+                    sig, set(), s_hat, s_hat_0, s_hat_1,
+                    truthTableMap, refSigBitNames, inputSigBitNames)
         done += 1
-
+    print("finished calc")
     #print("s_hat: ",s_hat)
     #print("s_hat0: ",s_hat_0)
     #print("s_hat1: ", s_hat_1)
 
+    # print("s_hat: ",s_hat)
+    #with open("s_hat.txt", "w") as f:
+    #    print("s_hat", s_hat, file=f)
+
+    #with open("s_hat_0.txt", "w") as f:
+    #    print("s_hat_0", s_hat_0, file=f)
+
+    #with open("s_hat_1.txt", "w") as f:
+    #    print("s_hat_1", s_hat_1, file=f)
+
+        # print("s_hat0: ",s_hat_0)
+        # print("s_hat1: ", s_hat_1)
+
+        # build target signals: top-level outputs (out bits + Antena + others)
+    outputSigBitNames = []
+    if top_module_name in module_maps.moduleOutputPortListMap:
+        outs = module_maps.moduleOutputPortListMap[top_module_name]
+        outs_w = module_maps.moduleOutputPortWidthListMap[top_module_name]
+        for oname, w in zip(outs, outs_w):
+            for i in range(w):
+                outputSigBitNames.append(f"{top_module_name}.{oname}[{i}:{i}]")
+                for t in range(UNROLL_DEPTH + 1):
+                    outputSigBitNames.append(f"{top_module_name}.{oname}[{i}:{i}]@{t}")
+
+    print("outputSigBitNames ", outputSigBitNames)
     results = estimate_c_and_pbv_from_conditional_probs(
-        s_hat_0, s_hat_1, s_hat, refSigBitNames, signalNames
+        s_hat_0, s_hat_1, s_hat, refSigBitNames, signalNames, target_signals=outputSigBitNames
     )
-    top_10 = sorted(results.items(), key=lambda x: x[1]['Leakage'], reverse=True)[:10]
+    # aggregate per base signal/ref (max over time slices)
+    aggregated = {}
+    for (sig, ref), metrics in results.items():
+        base_sig = sig.split("@")[0]
+        base_ref = ref.split("@")[0]
+        key = (base_sig, base_ref)
+        if key not in aggregated or metrics['Leakage'] > aggregated[key]['Leakage']:
+            aggregated[key] = metrics
+
+    top_10 = sorted(aggregated.items(), key=lambda x: x[1]['Leakage'], reverse=True)[:500]
 
     print("\nTop 10 signals with highest leakage:")
     for (sig, ref), metrics in top_10:
-        print(f"Signal: {sig}, Leakage: {metrics['Leakage']:.4f}, PBV: {metrics['PBV']:.4f}")
+        print(f"Signal: {sig}, Ref: {ref}, "f"Leakage: {metrics['Leakage']:.15f}, PBV: {metrics['PBV']:.15f}")
 
     sigLeaks = {}
+    sigLeaks_ext = {}
 
     print()
     import math
-    baseLeak = 1.0/math.sqrt(ref_sig_width)
+    baseLeak = 1.0 / math.sqrt(ref_sig_width)
 
     # leakage score calculation
     for sig in tqdm(sigWidths, desc="Leakage calculation"):
@@ -153,6 +212,8 @@ def main(input_file_path, top_module_name, ref_module_name, ref_instance_name,
                             leak = leak / math.sqrt(denom)
                     leakVal += leak
                 leakages.append(leakVal ** 2)
+                sigLeaks_ext[sigName] = leakVal
+
             else:
                 flag = 0
                 break
@@ -162,26 +223,11 @@ def main(input_file_path, top_module_name, ref_module_name, ref_instance_name,
             if sigLeaks[sig] > 1:
                 sigLeaks[sig] = 1
 
+    print()
     endTime = time.time()
 
-    print()
     print("Number of signals: {}".format(len(sigLeaks)))
     print("Total time taken: {:.4f}s".format(endTime - startTime))
-
-    with open(time_file_path, "w") as tf:
-        tf.write("Number of signals: {}\n".format(len(sigLeaks)))
-        tf.write("Total time taken: {:.4f}s\n".format(endTime - startTime))
-
-    with open(leaks_file_path, "w") as lf:
-        lf.write("%s,%s\n" % ("Signal", "Leakage"))
-        for sig in sorted(sigLeaks, key=sigLeaks.get, reverse=True):
-            leak = sigLeaks[sig]
-            lf.write("%s,%.4f\n" % (sig, leak))
-
-    print()
-    print("Completed!")
-    print("******************************************************************")
-    print()
 
     print("\nCompleted!")
     print("******************************************************************\n")
@@ -200,6 +246,8 @@ if __name__ == '__main__':
     my_parser.add_argument('RefSigName',      metavar='ref_sig_name',      type=str)
     my_parser.add_argument('RefSigWidth',     metavar='ref_sig_width',     type=int)
     my_parser.add_argument('Design',          metavar='design',            type=str)
+    my_parser.add_argument('--reconvergence-aware', action='store_true',
+                           help='enable reconvergence cone DP (collapse cones once resolved)')
     my_parser.add_argument('-r', '--results-path', type=str, action='store',
                            help='name of directory within results/ directory to store results')
 
@@ -228,5 +276,6 @@ if __name__ == '__main__':
     time_file_path = '{}/time.txt'.format(results_path)
     main(args.InputFilePath, args.TopModuleName,
          args.RefModuleName, args.RefInstanceName,
-         args.RefSigName, args.RefSigWidth, args.Design, leaks_file_path, time_file_path)
+         args.RefSigName, args.RefSigWidth, args.Design, leaks_file_path, time_file_path,
+         reconvergence_aware=args.reconvergence_aware)
     print("Runtime:", time.time() - start, "seconds")

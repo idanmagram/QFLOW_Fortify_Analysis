@@ -42,6 +42,7 @@ moduleWireWidthMap = {}
 # bases assigned via sequential (nonblocking) statements
 seqBases = set()
 
+
 # parses the input Verilog file (along with standard module definitions)
 def populateModuleAstMap(file_path):
     global moduleAstMap
@@ -50,13 +51,13 @@ def populateModuleAstMap(file_path):
     a = time.time()
     ast, directives = parse([file_path, 'std_cell_lib/std_gates.v', 'std_cell_lib/std_modules.v'])
 
-
     b = time.time()
 
     for item in ast.description.definitions:
         moduleAstMap[item.name] = item
 
     print("Parsing completed in {:.4f}s".format(b - a))
+
 
 # creates mappings between modules and their input ports & widths, output ports & widths, wires
 # creates mappings between modules and their input ports & widths, output ports & widths, wires
@@ -74,7 +75,8 @@ def populateModuleInputOutputPortListMap(moduleAst):
         if isinstance(itemAst, vast.Decl):
             for varAst in itemAst.list:
                 if varAst.width is not None:
-                    width = utils.verilogIntConstToInt(varAst.width.msb) - utils.verilogIntConstToInt(varAst.width.lsb) + 1
+                    width = utils.verilogIntConstToInt(varAst.width.msb) - utils.verilogIntConstToInt(
+                        varAst.width.lsb) + 1
                 else:
                     width = 1
 
@@ -88,6 +90,7 @@ def populateModuleInputOutputPortListMap(moduleAst):
                     moduleWireListMap[module_name].append(varAst.name)
                     moduleWireWidthListMap[module_name].append(width)
 
+
 # recursively gets the list of all instances within an ast
 def getInstListFromAst(ast):
     inst_list = []
@@ -97,6 +100,7 @@ def getInstListFromAst(ast):
         inst_list.extend(getInstListFromAst(child))
 
     return inst_list
+
 
 # getting the list of rhs signal names from the ast type, instance name and its width
 def getRnames(x, instance_name, wid):
@@ -143,6 +147,7 @@ def getRnames(x, instance_name, wid):
         rnames = ['{}[{}:{}]'.format(rname, j, j) for j in range(wid)]
 
     return rnames
+
 
 # populate the maps between input/output ports and corresponding arguments
 def populateInstPortInputOutputMap(inst, instance_name):
@@ -192,6 +197,7 @@ def populateInstPortInputOutputMap(inst, instance_name):
     instPortInputsMap[inst_name] = {"lnames": all_lnames_inp[:], "rnames": all_rnames_inp[:]}
     instPortOutputsMap[inst_name] = {"lnames": all_lnames_out[:], "rnames": all_rnames_out[:]}
 
+
 # extract the sub-circuit of the design influenced by the reference signal bits
 def extractSubCircuit(module_name, instance_name, ref_sig_bit_names):
     global truthTableMap
@@ -219,35 +225,36 @@ def extractSubCircuit(module_name, instance_name, ref_sig_bit_names):
             base = k.split("[", 1)[0]
         except Exception:
             continue
+
         def _refs_base(expr, b):
             if isinstance(expr, str):
-                return expr.split("[",1)[0] == b if "[" in expr else expr == b
+                return expr.split("[", 1)[0] == b if "[" in expr else expr == b
             if isinstance(expr, list):
                 return any(_refs_base(e, b) for e in expr[1:])
             return False
+
         if _refs_base(v, base):
             self_driven.add(k)
-    
+
     # NEW: Also keep any signal that is a sequential base (register),
     # ensuring we don't prune loops hidden behind wires (like lfsr_stream <= d0).
-    # print(f"DEBUG: seqBases sample: {list(seqBases)[:5]}") 
+    # print(f"DEBUG: seqBases sample: {list(seqBases)[:5]}")
     for k in truthTableMap.keys():
         try:
             base = k.split("[", 1)[0]
         except:
             continue
-        
+
         # Check against seqBases (which are module-local names, e.g. 'lfsr_stream')
         # identifying if the leaf identifier of the hierarchical name is in seqBases
         leaf = base.split('.')[-1]
-        
+
         if leaf in seqBases:
             self_driven.add(k)
-            
+
         # Also check exact match just in case
         if base in seqBases:
             self_driven.add(k)
-
 
     # keep self-driven signals in the returned set regardless of reachability
     signalNames |= self_driven
@@ -301,6 +308,7 @@ def extractSubCircuit(module_name, instance_name, ref_sig_bit_names):
                 encounteredSigs.add(sig)
                 forward.add(sig)
 
+
 # constructs the complete signal name(s) from the ast type and instance name
 def getSigName(ast, instance_name):
     if isinstance(ast, vast.Identifier):
@@ -309,7 +317,7 @@ def getSigName(ast, instance_name):
         if width is None:
             # treat identifiers with unknown width as scalar
             width = 1
-        sigName = '{}[{}:{}]'.format(sigName, width-1, 0)
+        sigName = '{}[{}:{}]'.format(sigName, width - 1, 0)
     elif isinstance(ast, vast.Partselect):
         sigName = '{}.{}[{}:{}]'.format(instance_name, ast.var.name, ast.msb, ast.lsb)
     elif isinstance(ast, vast.Pointer):
@@ -344,7 +352,9 @@ def getSigName(ast, instance_name):
     elif isinstance(ast, vast.Unot) or isinstance(ast, vast.Ulnot):
         rname = getSigName(ast.right, instance_name)
         sigName = ['Not', rname]
-    elif isinstance(ast, vast.Or) or isinstance(ast, vast.And) or isinstance(ast, vast.Xor) or isinstance(ast, vast.Eq) or isinstance(ast, vast.NotEq) or isinstance(ast, vast.Sll): #or isinstance(ast, vast.Plus):
+    elif isinstance(ast, vast.Or) or isinstance(ast, vast.And) or isinstance(ast, vast.Xor) or isinstance(ast,
+                                                                                                          vast.Eq) or isinstance(
+            ast, vast.NotEq) or isinstance(ast, vast.Sll):  # or isinstance(ast, vast.Plus):
         if isinstance(ast, vast.Or):
             op = 'Or'
         elif isinstance(ast, vast.And):
@@ -367,37 +377,41 @@ def getSigName(ast, instance_name):
     else:
         sigName = '{}.{}'.format(instance_name, ast)
         width = sigWidths.get(sigName, 1)
-        sigName = '{}[{}:{}]'.format(sigName, width-1, 0)
+        sigName = '{}[{}:{}]'.format(sigName, width - 1, 0)
 
     return sigName
+
 
 # getting the list of rhs signal names from the signal name and its low, high indices
 def getRnamesExpr(rname, low, high):
     if not isinstance(rname, list):
         rbase = int(rname.split("]")[0].split(":")[1])
-        return ['{}[{}:{}]'.format(rname.split('[')[0], rbase+i-low, rbase+i-low) for i in range(low, high+1)]
+        return ['{}[{}:{}]'.format(rname.split('[')[0], rbase + i - low, rbase + i - low) for i in range(low, high + 1)]
 
     rnames = [rname[0]]
     rbase_1 = 0
     rbase_2 = 0
 
     if isinstance(rname[1], int):
-        bitVals1 = [int(x) for x in format(rname[1], str('0'+str(high-low+1)+'b'))]
+        bitVals1 = [int(x) for x in format(rname[1], str('0' + str(high - low + 1) + 'b'))]
         bitVals1.reverse()
         rnames.append(bitVals1)
     else:
         rbase_1 = int(rname[1].split("]")[0].split(":")[1])
-        rnames.append(['{}[{}:{}]'.format(rname[1].split('[')[0], rbase_1+i-low, rbase_1+i-low) for i in range(low, high+1)])
+        rnames.append(['{}[{}:{}]'.format(rname[1].split('[')[0], rbase_1 + i - low, rbase_1 + i - low) for i in
+                       range(low, high + 1)])
 
     if isinstance(rname[2], int):
-        bitVals2 = [int(x) for x in format(rname[2], str('0'+str(high-low+1)+'b'))]
+        bitVals2 = [int(x) for x in format(rname[2], str('0' + str(high - low + 1) + 'b'))]
         bitVals2.reverse()
         rnames.append(bitVals2)
     else:
         rbase_2 = int(rname[2].split("]")[0].split(":")[1])
-        rnames.append(['{}[{}:{}]'.format(rname[2].split('[')[0], rbase_2+i-low, rbase_2+i-low) for i in range(low, high+1)])
+        rnames.append(['{}[{}:{}]'.format(rname[2].split('[')[0], rbase_2 + i - low, rbase_2 + i - low) for i in
+                       range(low, high + 1)])
 
     return rnames
+
 
 # populates the expressions corresponding to the module/instance and all its internal modules/instances
 def populateModuleExprMap(module_name, instance_name):
@@ -435,7 +449,8 @@ def populateModuleExprMap(module_name, instance_name):
         try:
             with open("debug_recurse.txt", "a") as df:
                 df.write(f"Module {module_name} has instances: {[i.name for i in inst_list]}\n")
-        except: pass
+        except:
+            pass
         # analyse each of the instances within this module
         for inst in inst_list:
             inst_module_name = inst.module
@@ -482,30 +497,31 @@ def populateModuleExprMap(module_name, instance_name):
                         truthTableMap[r] = l
 
     # getting the expressions corresponding to the wires in the instance
-    moduleWireExprMap[module_name], moduleWireWidthMap[module_name], modTopSortMap = generate_z3.generateModuleMaps(moduleAst, moduleInputPortListMap, moduleOutputPortListMap, moduleInputPortWidthListMap, moduleOutputPortWidthListMap, moduleWireExprMap)
+    moduleWireExprMap[module_name], moduleWireWidthMap[module_name], modTopSortMap = generate_z3.generateModuleMaps(
+        moduleAst, moduleInputPortListMap, moduleOutputPortListMap, moduleInputPortWidthListMap,
+        moduleOutputPortWidthListMap, moduleWireExprMap)
 
     if module_name == "lfsr_counter":
         try:
             with open("debug_recurse.txt", "a") as df:
                 df.write(f"AST for lfsr_counter:\n")
                 if hasattr(moduleAst, 'items'):
-                     for item in moduleAst.items:
-                         df.write(f"  Item type: {type(item)}\n")
-                         if isinstance(item, vast.Always):
-                             df.write(f"    Always block sens: {item.sens_list}\n")
-                             # Check statements inside
-                             stmt = item.statement
-                             df.write(f"    Statement: {type(stmt)}\n")
+                    for item in moduleAst.items:
+                        df.write(f"  Item type: {type(item)}\n")
+                        if isinstance(item, vast.Always):
+                            df.write(f"    Always block sens: {item.sens_list}\n")
+                            # Check statements inside
+                            stmt = item.statement
+                            df.write(f"    Statement: {type(stmt)}\n")
                 df.write(f"modTopSortMap size: {len(modTopSortMap)}\n")
-        except: pass
-
+        except:
+            pass
 
     # populating the widths of the signals in the module/instance
     for w, wid in sorted(moduleWireWidthMap[module_name].items()):
         sigName = '{}.{}'.format(instance_name, w)
         sigWidths[sigName] = wid
     astProcessed = {}
-
 
     for node in modTopSortMap:
         for (key, val) in node.incomingEdgeAstMap.items():
@@ -531,7 +547,8 @@ def populateModuleExprMap(module_name, instance_name):
                             try:
                                 with open("debug_recurse.txt", "a") as df:
                                     df.write(f"Processing assign in {instance_name}: LHS={lnameonly}\n")
-                            except: pass
+                            except:
+                                pass
                             seqBases.add(lnameonly)
 
                         if isinstance(rhsAst, vast.Plus):
@@ -622,10 +639,13 @@ def populateModuleExprMap(module_name, instance_name):
 
                         else:
 
-                            if isinstance(rhsAst, vast.Or) or isinstance(rhsAst, vast.And) or isinstance(rhsAst, vast.Xor) or isinstance(rhsAst, vast.Eq) or isinstance(rhsAst, vast.NotEq) or isinstance(rhsAst, vast.Sll):
+                            if isinstance(rhsAst, vast.Or) or isinstance(rhsAst, vast.And) or isinstance(rhsAst,
+                                                                                                         vast.Xor) or isinstance(
+                                    rhsAst, vast.Eq) or isinstance(rhsAst, vast.NotEq) or isinstance(rhsAst, vast.Sll):
                                 rnames = getRnamesExpr(rname, low, high)
-                                for i in range(low, high+1):
-                                    truthTableMap['{}[{}:{}]'.format(lnameonly, i, i)] = [rnames[0], rnames[1][i-low], rnames[2][i-low]]
+                                for i in range(low, high + 1):
+                                    truthTableMap['{}[{}:{}]'.format(lnameonly, i, i)] = [rnames[0], rnames[1][i - low],
+                                                                                          rnames[2][i - low]]
 
 
                             elif isinstance(rhsAst, vast.IntConst):
@@ -643,18 +663,20 @@ def populateModuleExprMap(module_name, instance_name):
                                 condName = getSigName(rhsAst.cond, instance_name)
                                 tName = getSigName(rhsAst.true_value, instance_name)
                                 fName = getSigName(rhsAst.false_value, instance_name)
-                                #print("condName ", condName, "  tName", tName, "  fName", fName )
+                                print("fName = {}".format(fName))
                                 width = high - low + 1
 
                                 def _bit_at(expr_name, idx):
                                     if isinstance(expr_name, int):
                                         # extract the bit at position (idx-low) from the integer literal
-                                        return (expr_name >> (idx - low)) & 1 if low is not None else (expr_name >> idx) & 1
+                                        return (expr_name >> (idx - low)) & 1 if low is not None else (
+                                                                                                                  expr_name >> idx) & 1
                                     if isinstance(expr_name, list):
                                         # Handle concatenation-like lists (no op tag): pick the appropriate element bit
                                         if expr_name and not isinstance(expr_name[0], str):
                                             pass  # unlikely pattern
-                                        if expr_name and isinstance(expr_name[0], str) and expr_name[0] not in ("Cond", "Srl", "Plus"):
+                                        if expr_name and isinstance(expr_name[0], str) and expr_name[0] not in (
+                                        "Cond", "Srl", "Plus"):
                                             # Treat as concatenation elements, LSB-first
                                             bit_cursor = low
                                             for elem in expr_name:
@@ -708,6 +730,7 @@ def populateModuleExprMap(module_name, instance_name):
                                         if len(expr_name) == 3 and expr_name[0] == 'Plus':
                                             left = expr_name[1]
                                             right = expr_name[2]
+
                                             def bit_from_name(name, bit_idx):
                                                 if isinstance(name, int):
                                                     return (name >> bit_idx) & 1
@@ -725,6 +748,7 @@ def populateModuleExprMap(module_name, instance_name):
                                                     return f'{base}[{bit_idx}:{bit_idx}]'
                                                 except Exception:
                                                     return name
+
                                             lbit = bit_from_name(left, idx)
                                             rbit = bit_from_name(right, idx)
                                             return ['Xor', lbit, rbit]
@@ -742,35 +766,21 @@ def populateModuleExprMap(module_name, instance_name):
                                     tbit = _bit_at(tName, i)
                                     fbit = _bit_at(fName, i)
                                     # simplify pattern: Cond(Not condName, X, 0) -> X
-                                    if isinstance(fbit, list) and len(fbit) == 4 and fbit[0] == 'Cond' and isinstance(fbit[1], list):
+                                    if isinstance(fbit, list) and len(fbit) == 4 and fbit[0] == 'Cond' and isinstance(
+                                            fbit[1], list):
                                         inner_cond = fbit[1]
                                         if inner_cond == ['Not', condName] and fbit[3] == 0:
                                             fbit = fbit[2]
                                     bit_exprs[i] = ['Cond', condName, tbit, fbit]
 
-                                def _parse_self_ref(expr, cur_idx=None):
-                                    """Return bit index if expr is (or contains) a self-reference to lnameonly[bit]."""
+                                def _parse_self_ref(expr):
+                                    """Return bit index if expr is a self-reference to lnameonly[idx:idx]."""
                                     if isinstance(expr, str) and expr.startswith(lnameonly + "["):
                                         try:
-                                            rng = expr.split("[", 1)[1].split("]", 1)[0]
-                                            if ":" in rng:
-                                                msb, lsb = map(int, rng.split(":"))
-                                                # single-bit slice
-                                                if msb == lsb:
-                                                    return lsb
-                                                # if we know the dest bit, map by offset from lsb
-                                                if cur_idx is not None:
-                                                    return lsb + (cur_idx - low)
-                                                return msb
-                                            else:
-                                                return int(rng)
+                                            idx_str = expr.split("[", 1)[1].split(":", 1)[0]
+                                            return int(idx_str)
                                         except (IndexError, ValueError):
                                             return None
-                                    if isinstance(expr, list):
-                                        for e in expr[1:]:
-                                            idx = _parse_self_ref(e, cur_idx)
-                                            if idx is not None:
-                                                return idx
                                     return None
 
                                 def _normalize_shift(ref_idx, cur_idx):
@@ -799,66 +809,64 @@ def populateModuleExprMap(module_name, instance_name):
                                             span = width
                                             bit_idx = ((bit_idx - low) % span) + low
                                         elif bit_idx < low or bit_idx > high:
-                                            print(f"[shift-chain] {lnameonly}[{idx}] -> off-bus at step {step}, appending 0")
                                             key_bits.append(0)
                                             break
-                                        src_bit = _bit_at(data_expr, bit_idx)
-                                        print(f"[shift-chain] {lnameonly}[{idx}] step {step} uses {src_bit}")
-                                        key_bits.append(src_bit)
+                                        key_bits.append(_bit_at(data_expr, bit_idx))
                                     if not key_bits:
                                         return 0
                                     return ['Mix'] + key_bits
 
+                                def _expand_bus_bits(expr_name):
+                                    if isinstance(expr_name, int):
+                                        # constant: expand to width bits
+                                        bits = []
+                                        for b in range(width):
+                                            bits.append((expr_name >> b) & 1)
+                                        return bits
+                                    if isinstance(expr_name, list):
+                                        # already a composed expression; treat as-is
+                                        return [expr_name]
+                                    if not isinstance(expr_name, str):
+                                        return [expr_name]
+                                    try:
+                                        base = expr_name.rsplit('[', 1)[0]
+                                        rng = expr_name.split("[", 1)[1].split("]")[0]
+                                        if ':' in rng:
+                                            msb, lsb = map(int, rng.split(':'))
+                                        else:
+                                            msb = lsb = int(rng)
+                                    except Exception:
+                                        base = expr_name
+                                        msb = sigWidths.get(base, width) - 1
+                                        lsb = 0
+                                    return [f'{base}[{j}:{j}]' for j in range(lsb, msb + 1)]
+
                                 depth_limit = min(SHIFT_UNROLL_LIMIT, high - low + 1)
-                                print(f"[shift-chain-scan] Scanning {lnameonly} bits {low}..{high}")
-                                if lnameonly == "top.U_RSA.exp":
-                                    print("KK")
                                 for i in range(low, high + 1):
                                     expr = bit_exprs.get(i)
-                                    # print(f"  Bit {i} expr: {expr}")
                                     if isinstance(expr, list) and expr[0] == 'Cond':
-                                        # Identify hold branch (self[i]) to determine shift direction from the other branch
-                                        hold_idx_false = _parse_self_ref(expr[3], i)
-                                        hold_idx_true  = _parse_self_ref(expr[2], i)
-                                        ref_idx_false  = hold_idx_false
-                                        ref_idx_true   = hold_idx_true
-                                        
-                                        src_idx = None
-                                        data_expr = None
-                                        
-                                        if hold_idx_false == i:
-                                            # False is hold, True is change/shift
-                                            data_expr = tName
-                                            src_idx = _parse_self_ref(expr[2], i)
-                                        elif hold_idx_true == i:
-                                            # True is hold, False is change/shift
-                                            data_expr = fName
-                                            src_idx = _parse_self_ref(expr[3], i)
-                                        elif ref_idx_true is not None and ref_idx_true != i and expr[3] == 0:
-                                            # No explicit hold, but true branch shifts from another bit; false branch is 0
-                                            data_expr = tName
-                                            src_idx = ref_idx_true
-                                        elif ref_idx_false is not None and ref_idx_false != i and expr[2] == 0:
-                                            # No explicit hold, but false branch shifts from another bit; true branch is 0
-                                            data_expr = fName
-                                            src_idx = ref_idx_false
-                                        elif ref_idx_false is not None and ref_idx_false != i and data_expr is None:
-                                            # Branch uses another bit; assume shift from that branch
-                                            data_expr = fName
-                                            src_idx = ref_idx_false
-                                        elif ref_idx_true is not None and ref_idx_true != i and data_expr is None:
-                                            data_expr = tName
-                                            src_idx = ref_idx_true
-                                        
-                                        print(f"  [shift-chain-eval] bit {i}: hold_false={hold_idx_false} hold_true={hold_idx_true} => src_idx={src_idx}")
-
-                                        if src_idx is not None:
-                                            print(f"[shift-chain-detect] {lnameonly}[{i}] hold branch detected; src_idx={src_idx} data_expr={data_expr}")
-                                            shift_delta, wrap = _normalize_shift(src_idx, i)
+                                        ref_idx = _parse_self_ref(expr[3])
+                                        data_expr = tName
+                                        if ref_idx is None:
+                                            ref_idx = _parse_self_ref(expr[2])
+                                            if ref_idx is not None:
+                                                data_expr = fName
+                                        # Only treat as pure shift if the data expression is the same bus (true self-shift).
+                                        if ref_idx is not None and isinstance(data_expr, str) and data_expr.startswith(
+                                                lnameonly):
+                                            shift_delta, wrap = _normalize_shift(ref_idx, i)
                                             if shift_delta != 0:
-                                                chain_expr = _build_shift_chain(i, shift_delta, depth_limit, wrap, data_expr)
+                                                chain_expr = _build_shift_chain(i, shift_delta, depth_limit, wrap,
+                                                                                data_expr)
                                                 truthTableMap['{}[{}:{}]'.format(lnameonly, i, i)] = chain_expr
                                                 continue
+                                        # Load-then-shift modeling: if one branch is self-shift and the other
+                                        # branch is an external bus (e.g., key), approximate as a Mix over that bus.
+                                        if ref_idx is not None and isinstance(data_expr, str) and not data_expr.startswith(
+                                                lnameonly):
+                                            mix_bits = _expand_bus_bits(data_expr)
+                                            truthTableMap['{}[{}:{}]'.format(lnameonly, i, i)] = ['Mix'] + mix_bits
+                                            continue
                                     truthTableMap['{}[{}:{}]'.format(lnameonly, i, i)] = expr
 
                             elif isinstance(rhsAst, vast.Srl):
@@ -870,7 +878,8 @@ def populateModuleExprMap(module_name, instance_name):
                                 for i in range(low, high + 1):
                                     src_idx = i + shift_amt
                                     if src_idx <= high:
-                                        truthTableMap['{}[{}:{}]'.format(lnameonly, i, i)] = '{}[{}:{}]'.format(lnameonly, src_idx, src_idx)
+                                        truthTableMap['{}[{}:{}]'.format(lnameonly, i, i)] = '{}[{}:{}]'.format(
+                                            lnameonly, src_idx, src_idx)
                                     else:
                                         truthTableMap['{}[{}:{}]'.format(lnameonly, i, i)] = 0
                             elif isinstance(rhsAst, vast.Plus):
@@ -880,6 +889,7 @@ def populateModuleExprMap(module_name, instance_name):
                                         return getRnamesExpr(expr, low, high)
                                     except Exception:
                                         return None
+
                                 if isinstance(rname, list) and len(rname) >= 3:
                                     a_bits = _bits(rname[1])
                                     b_bits = _bits(rname[2])
@@ -942,7 +952,8 @@ def populateModuleExprMap(module_name, instance_name):
                     elif isinstance(ast, vast.Instance):
                         pass
                     else:
-                        assert(False)
+                        assert (False)
+
 
 # gets the names of all the signals within a module/instance, including internal modules/instances
 def getInternalSignalNames(module_name, instance_name):
@@ -1018,6 +1029,7 @@ def getInternalSignalNames(module_name, instance_name):
                 signalName = '{}[{}:{}]'.format(sig, j, j)
                 signalNames.add(signalName)
 
+
 # Build a time-unrolled truth table map for looped signals only, depth H (LHS at t+1 from RHS at t).
 def build_time_unrolled_truth_table(truthTableMap, H=0):
     def _base(sig):
@@ -1032,9 +1044,9 @@ def build_time_unrolled_truth_table(truthTableMap, H=0):
             return any(_expr_refs_base(e, base) for e in expr)
         return False
 
-    loop_bases = { _base(k) for k, v in truthTableMap.items() if _expr_refs_base(v, _base(k)) }
+    loop_bases = {_base(k) for k, v in truthTableMap.items() if _expr_refs_base(v, _base(k))}
     seq_bases = set(seqBases)
-    
+
     def _is_seq_base(base_name):
         if base_name in seq_bases:
             return True
@@ -1045,7 +1057,7 @@ def build_time_unrolled_truth_table(truthTableMap, H=0):
         return False
 
     loop_keys = {k for k in truthTableMap.keys() if _base(k) in loop_bases or _is_seq_base(_base(k))}
-    
+
     # DEBUG to file
     try:
         with open("debug_dump.txt", "w") as df:
@@ -1061,7 +1073,7 @@ def build_time_unrolled_truth_table(truthTableMap, H=0):
                     df.write(f"  YES: {sb}\n")
                     found_seq = True
             if not found_seq: df.write("  NO\n")
-            
+
             df.write("lfsr_stream in loop_keys?\n")
             found_loop = False
             for lk in loop_keys:
@@ -1069,11 +1081,9 @@ def build_time_unrolled_truth_table(truthTableMap, H=0):
                     df.write(f"  YES: {lk}\n")
                     found_loop = True
             if not found_loop: df.write("  NO\n")
-            
+
     except Exception as e:
         print(f"Debug write failed: {e}")
-    
-    # keys that depend on loop/seq bases (fanout aliases)
 
     # keys that depend on loop/seq bases (fanout aliases)
     def _expr_bases(expr):
@@ -1086,14 +1096,34 @@ def build_time_unrolled_truth_table(truthTableMap, H=0):
                 out |= _expr_bases(e)
             return out
         return set()
-    dep_keys = {k for k, v in truthTableMap.items() if _expr_bases(v) & (loop_bases | seq_bases)}
+
+    # compute transitive dependency on loop/seq bases (e.g., counter -> lfsr -> lfsr_stream)
+    base_deps = {}
+    for k, v in truthTableMap.items():
+        bk = _base(k)
+        if not bk:
+            continue
+        base_deps.setdefault(bk, set()).update(_expr_bases(v))
+
+    changed = True
+    reach = set(loop_bases | seq_bases)
+    while changed:
+        changed = False
+        for bk, deps in base_deps.items():
+            if bk in reach:
+                continue
+            if deps & reach:
+                reach.add(bk)
+                changed = True
+
+    dep_keys = {k for k in truthTableMap.keys() if _base(k) in reach and _base(k) not in loop_bases}
 
     def _rewrite(expr, t):
         if isinstance(expr, int):
             return expr
         if isinstance(expr, str):
             b = _base(expr)
-            return f"{expr}@{t}" if b in loop_bases or b in seq_bases else expr
+            return f"{expr}@{t}" if b in reach else expr
         if isinstance(expr, list):
             return [expr[0]] + [_rewrite(e, t) for e in expr[1:]]
         return expr
@@ -1104,23 +1134,25 @@ def build_time_unrolled_truth_table(truthTableMap, H=0):
         op = expr[0]
         if op == "Eq":
             a, b = expr[1], expr[2]
+
             def _bits(x):
                 if isinstance(x, str) and "[" in x and ":" in x and x.endswith("]"):
                     try:
-                        base = x.split("[",1)[0]
-                        rng = x.split("[",1)[1].split("]")[0]
+                        base = x.split("[", 1)[0]
+                        rng = x.split("[", 1)[1].split("]")[0]
                         msb, lsb = map(int, rng.split(":"))
-                        return [f"{base}[{i}:{i}]" for i in range(lsb, msb+1)]
+                        return [f"{base}[{i}:{i}]" for i in range(lsb, msb + 1)]
                     except Exception:
                         return None
                 return None
+
             abits = _bits(a)
             bbits = _bits(b)
             base_a = _base(a) if abits else None
             base_b = _base(b) if bbits else None
             loop_a = base_a in loop_bases if base_a else False
             loop_b = base_b in loop_bases if base_b else False
-            if abits and bbits and len(abits)==len(bbits):
+            if abits and bbits and len(abits) == len(bbits):
                 if loop_a or loop_b:
                     terms = [["Eq", ai, bi] for ai, bi in zip(abits, bbits)]
                     acc = terms[0]
@@ -1130,7 +1162,7 @@ def build_time_unrolled_truth_table(truthTableMap, H=0):
                 else:
                     return ["EqBus", a, b, 0.0001]
             elif abits and isinstance(b, int):
-                bits = [ (b >> i) & 1 for i in range(len(abits)) ]
+                bits = [(b >> i) & 1 for i in range(len(abits))]
                 if loop_a:
                     terms = [["Eq", ai, bits[i]] for i, ai in enumerate(abits)]
                     acc = terms[0]
@@ -1161,7 +1193,7 @@ def build_time_unrolled_truth_table(truthTableMap, H=0):
         base = _base(key)
         if (base in loop_bases or base in seq_bases) and key in loop_keys:
             for t in range(H):
-                lhs = f"{key}@{t+1}"
+                lhs = f"{key}@{t + 1}"
                 rhs = _rewrite(expr, t)
                 rhs = _expand_eq(rhs)
                 unrolled[lhs] = _simplify(rhs)
@@ -1179,6 +1211,7 @@ def build_time_unrolled_truth_table(truthTableMap, H=0):
             unrolled[lhs] = _simplify(rhs)
             sigs.add(lhs)
     return unrolled, sigs
+
 
 # main function to extract the sub-circuit of the design which is influenced by the reference signal bits
 def subCircuitExtract(input_file_path, top_module_name, ref_module_name, ref_instance_name, ref_sig_bit_names):

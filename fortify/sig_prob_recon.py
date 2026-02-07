@@ -1,24 +1,11 @@
 # sig_prob_recon.py
 import sys
-import os
-import multiprocessing as mp
 from itertools import product
-from concurrent.futures import ProcessPoolExecutor, as_completed
 
 sys.setrecursionlimit(100000)
 
-# -----------------------
-# Tunable parallel knobs
-# -----------------------
-PAR_REF_THRESHOLD = 8      # parallelize conditional loop if >= this many refs
-CUT_ASSIGN_PAR_MIN = 16    # parallelize cutset enumeration if > this many assignments
-
-def _in_subprocess() -> bool:
-    return mp.current_process().name != "MainProcess"
-
 # ------------------------------------------------------------
-# Incremental signal probability (valid when inputs are
-# independent *under the current conditioning*).
+# Incremental signal probability for standard logic gates.
 # ------------------------------------------------------------
 def incSigProb(a, b, op):
     op = op.capitalize()
@@ -28,6 +15,10 @@ def incSigProb(a, b, op):
         return a + b - a * b
     elif op == "Xor":
         return a + b - 2.0 * a * b
+    elif op == "Eq":
+        return a * b + (1.0 - a) * (1.0 - b)
+    elif op == "Noteq":
+        return a + b - 2.0 * a * b
     elif op == "Nand":
         return 1.0 - a * b
     elif op == "Nor":
@@ -35,479 +26,528 @@ def incSigProb(a, b, op):
     else:
         raise ValueError(f"Unsupported op {op}")
 
+
 def gate_formula(op, pA, pB):
-    # same semantics, just without 'independence' wording
     return incSigProb(pA, pB, op)
 
+
 # ------------------------------------------------------------------
-# Helper: extract signal names referenced by an expression node
-# Forms supported:
-#   - int constant
-#   - str alias (e.g., 'mod.sig[0:0]')
-#   - list gate: ['Not', x] or ['And'/'Or'/'Xor'/'Nand'/'Nor', a, b]
+# Helper: extract signal names referenced by an expression node.
 # ------------------------------------------------------------------
-def _extract_signal_names(exp):
+def _extract_signal_names(exp, self_name=None):
     if isinstance(exp, int):
         return set()
     if isinstance(exp, str):
+        if self_name is not None and exp == self_name:
+            return set()
         return {exp}
     if isinstance(exp, list):
+        if not exp:
+            return set()
         op = exp[0]
-        if op == "Not":
-            return _extract_signal_names(exp[1])
-        if op == "Mix":
-            out = set()
-            for part in exp[1:]:
-                out |= _extract_signal_names(part)
-            return out
-        # Fallback: union all children beyond op position
+        if op == "Cond":
+            cond = exp[1]
+            tval = exp[2] if len(exp) > 2 else 0
+            fval = exp[3] if len(exp) > 3 else 0
+            return (_extract_signal_names(cond, self_name=self_name) |
+                    _extract_signal_names(tval, self_name=self_name) |
+                    _extract_signal_names(fval, self_name=self_name))
         out = set()
         for part in exp[1:]:
-            out |= _extract_signal_names(part)
+            out |= _extract_signal_names(part, self_name=self_name)
         return out
     return set()
 
-# ------------------------------------------------------------------
-# Factorized prior over variables. If you have a joint prior,
-# pass a callable prior(assign_dict) -> probability.
-# ------------------------------------------------------------------
-def _pz(var_names, bits, prior_map_or_callable, fallback_prob=0.5):
-    if callable(prior_map_or_callable):
-        return float(prior_map_or_callable(dict(zip(var_names, bits))))
-    p = 1.0
-    for name, bit in zip(var_names, bits):
-        p1 = float(prior_map_or_callable.get(name, fallback_prob))
-        p *= p1 if bit else (1.0 - p1)
-    return p
 
-# ------------------------------------------------------------------
-# Clamp-aware probability evaluator:
-#   returns P(sig=1 | clamps), recursively using truthTableMap.
-#   Caches per (sig, frozenset(clamps.items())).
-#   NOTE: This combines sub-probs with gate_formula; for exact handling
-#         of reconvergence between the *two* inputs of a single gate,
-#         use the cutset helpers below at the caller level.
-# ------------------------------------------------------------------
-def prob_with_clamps(sig, truthTableMap, clamps, cache):
-    key = (sig, frozenset(clamps.items()))
+# -----------------------
+# Reconvergence DP helpers
+# -----------------------
+def _atomic_prob(sig, clamps, s_hat, s_hat_0, s_hat_1, ref_name=None):
+    if sig in clamps:
+        return float(clamps[sig])
+    if ref_name is not None and ref_name in clamps:
+        ref_val = clamps[ref_name]
+        if sig in s_hat_0 and sig in s_hat_1 and ref_name in s_hat_0[sig]:
+            return float(s_hat_0[sig][ref_name] if ref_val == 0 else s_hat_1[sig][ref_name])
+    return float(s_hat.get(sig, 0.5))
+
+
+def _bits_from_bus(bus):
+    if not isinstance(bus, str):
+        return None
+    if "[" in bus and ":" in bus and bus.endswith("]"):
+        try:
+            base = bus.split("[", 1)[0]
+            rng = bus.split("[", 1)[1].split("]")[0]
+            msb, lsb = map(int, rng.split(":"))
+            return [f"{base}[{i}:{i}]" for i in range(lsb, msb + 1)]
+        except Exception:
+            return None
+    return None
+
+
+def prob_with_clamps_atomic(sig, truthTableMap, clamps, cache, atomic_set,
+                            s_hat, s_hat_0, s_hat_1, ref_name=None,
+                            visiting=None):
+    key = (str(sig), frozenset(clamps.items()))
     if key in cache:
         return cache[key]
 
-    if sig in clamps:
-        cache[key] = float(clamps[sig])
+    if visiting is None:
+        visiting = set()
+
+    if isinstance(sig, int):
+        cache[key] = float(sig)
         return cache[key]
 
-    if sig not in truthTableMap:
-        cache[key] = 0.5  # unknown leaf default
-        return cache[key]
-
-    exp = truthTableMap[sig]
+    if isinstance(sig, str):
+        if sig in visiting:
+            #print(f"[cycle] {sig} -> atomic fallback")
+            cache[key] = _atomic_prob(sig, clamps, s_hat, s_hat_0, s_hat_1, ref_name)
+            return cache[key]
+        visiting.add(sig)
+        if sig in clamps:
+            cache[key] = float(clamps[sig])
+            visiting.remove(sig)
+            return cache[key]
+        if sig in atomic_set or sig not in truthTableMap:
+            cache[key] = _atomic_prob(sig, clamps, s_hat, s_hat_0, s_hat_1, ref_name)
+            visiting.remove(sig)
+            return cache[key]
+        exp = truthTableMap[sig]
+    else:
+        exp = sig
 
     if isinstance(exp, int):
         cache[key] = float(exp)
+        if isinstance(sig, str):
+            visiting.remove(sig)
         return cache[key]
-
     if isinstance(exp, str):
-        p = prob_with_clamps(exp, truthTableMap, clamps, cache)
+        p = prob_with_clamps_atomic(exp, truthTableMap, clamps, cache, atomic_set,
+                                    s_hat, s_hat_0, s_hat_1, ref_name,
+                                    visiting)
         cache[key] = p
+        if isinstance(sig, str):
+            visiting.remove(sig)
         return p
 
     if isinstance(exp, list):
-        op = exp[0]
-        if op == "Not":
-            c = exp[1]
-            p = 1.0 - prob_with_clamps(c, truthTableMap, clamps, cache)
+        op = exp[0] if exp else None
+        known_ops = {"Cond", "Not", "Mix", "And", "Or", "Xor", "Eq", "NotEq",
+                     "Nand", "Nor", "Srl", "Sll", "Plus", "Times", "Minus",
+                     "EqVec", "EqBus"}
+        if op not in known_ops:
+            p = prob_with_clamps_atomic(op, truthTableMap, clamps, cache, atomic_set,
+                                        s_hat, s_hat_0, s_hat_1, ref_name)
             cache[key] = p
             return p
+
+        if op == "Cond":
+            cond = exp[1] if len(exp) > 1 else 0
+            tval = exp[2] if len(exp) > 2 else 0
+            fval = exp[3] if len(exp) > 3 else 0
+            p_cond = prob_with_clamps_atomic(cond, truthTableMap, clamps, cache, atomic_set,
+                                             s_hat, s_hat_0, s_hat_1, ref_name,
+                                             visiting)
+            p_t = prob_with_clamps_atomic(tval, truthTableMap, clamps, cache, atomic_set,
+                                          s_hat, s_hat_0, s_hat_1, ref_name,
+                                          visiting)
+            p_f = prob_with_clamps_atomic(fval, truthTableMap, clamps, cache, atomic_set,
+                                          s_hat, s_hat_0, s_hat_1, ref_name,
+                                          visiting)
+            p = p_cond * p_t + (1.0 - p_cond) * p_f
+            cache[key] = p
+            if isinstance(sig, str):
+                visiting.remove(sig)
+            return p
+
+        if op == "EqVec":
+            bits_a = exp[1] if len(exp) > 1 else []
+            bits_b = exp[2] if len(exp) > 2 else []
+            floor = exp[3] if len(exp) > 3 else 0.0
+            eqps = []
+            for a_elem, b_elem in zip(bits_a, bits_b):
+                pa = prob_with_clamps_atomic(a_elem, truthTableMap, clamps, cache, atomic_set,
+                                             s_hat, s_hat_0, s_hat_1, ref_name,
+                                             visiting)
+                pb = b_elem if isinstance(b_elem, int) else prob_with_clamps_atomic(
+                    b_elem, truthTableMap, clamps, cache, atomic_set,
+                    s_hat, s_hat_0, s_hat_1, ref_name,
+                    visiting
+                )
+                eqps.append(pa * pb + (1.0 - pa) * (1.0 - pb))
+            val = min(eqps) if eqps else 0.5
+            val = max(val, floor)
+            cache[key] = val
+            if isinstance(sig, str):
+                visiting.remove(sig)
+            return val
+
+        if op == "EqBus":
+            a = exp[1] if len(exp) > 1 else ""
+            b = exp[2] if len(exp) > 2 else 0
+            floor = exp[3] if len(exp) > 3 else 0.0
+            abits = _bits_from_bus(a)
+            bbits = _bits_from_bus(b) if isinstance(b, str) else None
+            if abits is None:
+                cache[key] = floor
+                if isinstance(sig, str):
+                    visiting.remove(sig)
+                return floor
+            eqps = []
+            for idx, abit in enumerate(abits):
+                bbit = bbits[idx] if bbits and idx < len(bbits) else (
+                    (b >> idx) & 1 if isinstance(b, int) else b
+                )
+                pa = prob_with_clamps_atomic(abit, truthTableMap, clamps, cache, atomic_set,
+                                             s_hat, s_hat_0, s_hat_1, ref_name,
+                                             visiting)
+                pb = bbit if isinstance(bbit, int) else prob_with_clamps_atomic(
+                    bbit, truthTableMap, clamps, cache, atomic_set,
+                    s_hat, s_hat_0, s_hat_1, ref_name,
+                    visiting
+                )
+                eqps.append(pa * pb + (1.0 - pa) * (1.0 - pb))
+            val = min(eqps) if eqps else 0.5
+            val = max(val, floor)
+            cache[key] = val
+            if isinstance(sig, str):
+                visiting.remove(sig)
+            return val
+
+        if op == "Not":
+            c = exp[1] if len(exp) > 1 else 0
+            p = 1.0 - prob_with_clamps_atomic(c, truthTableMap, clamps, cache, atomic_set,
+                                              s_hat, s_hat_0, s_hat_1, ref_name,
+                                              visiting)
+            cache[key] = p
+            if isinstance(sig, str):
+                visiting.remove(sig)
+            return p
+
         if op == "Mix":
             parts = exp[1:]
             if not parts:
                 cache[key] = 0.0
+                if isinstance(sig, str):
+                    visiting.remove(sig)
                 return cache[key]
-            ps = [prob_with_clamps(part, truthTableMap, clamps, cache) for part in parts]
+            ps = [prob_with_clamps_atomic(part, truthTableMap, clamps, cache, atomic_set,
+                                          s_hat, s_hat_0, s_hat_1, ref_name,
+                                          visiting)
+                  for part in parts]
             p = sum(ps) / len(ps)
             cache[key] = p
+            if isinstance(sig, str):
+                visiting.remove(sig)
             return p
-        else:
-            a, b = exp[1], exp[2]
-            pA = prob_with_clamps(a, truthTableMap, clamps, cache)
-            pB = prob_with_clamps(b, truthTableMap, clamps, cache)
-            p = gate_formula(op, pA, pB)
+
+        if op in ("Srl", "Sll", "Plus", "Times", "Minus"):
+            left = exp[1] if len(exp) > 1 else 0
+            p = prob_with_clamps_atomic(left, truthTableMap, clamps, cache, atomic_set,
+                                        s_hat, s_hat_0, s_hat_1, ref_name,
+                                        visiting)
             cache[key] = p
+            if isinstance(sig, str):
+                visiting.remove(sig)
             return p
+
+        a = exp[1] if len(exp) > 1 else 0
+        b = exp[2] if len(exp) > 2 else 0
+        pA = prob_with_clamps_atomic(a, truthTableMap, clamps, cache, atomic_set,
+                                     s_hat, s_hat_0, s_hat_1, ref_name,
+                                     visiting)
+        pB = prob_with_clamps_atomic(b, truthTableMap, clamps, cache, atomic_set,
+                                     s_hat, s_hat_0, s_hat_1, ref_name,
+                                     visiting)
+        p = gate_formula(op, pA, pB)
+        cache[key] = p
+        if isinstance(sig, str):
+            visiting.remove(sig)
+        return p
 
     cache[key] = 0.5
+    if isinstance(sig, str) and sig in visiting:
+        visiting.remove(sig)
     return cache[key]
 
-# ========== Parallel helpers (top-level & picklable) ==========
 
-def _chunk_bits(all_bits, n):
-    L = list(all_bits)
-    if n <= 1 or len(L) <= n:
-        return [L]
-    size = (len(L) + n - 1) // n
-    return [L[i:i + size] for i in range(0, len(L), size)]
+def _pz_atomic(Z, bits, clamps, s_hat, s_hat_0, s_hat_1, ref_name=None):
+    p = 1.0
+    for name, bit in zip(Z, bits):
+        p1 = _atomic_prob(name, clamps, s_hat, s_hat_0, s_hat_1, ref_name)
+        p *= p1 if bit else (1.0 - p1)
+    return p
 
-def _gate_prob_chunk(op, a, b, truthTableMap, clamps_base, prior_map_or_callable, bits_chunk, Z):
-    cache = {}
-    total = 0.0
-    for bits in bits_chunk:
-        z_assign = dict(zip(Z, bits))
-        pz = _pz(Z, bits, prior_map_or_callable)
+
+def gate_prob_recon_dp(op, a, b, Z, truthTableMap, clamps, atomic_set,
+                       s_hat, s_hat_0, s_hat_1, ref_name=None):
+    if not Z:
+        cache = {}
+        pA = prob_with_clamps_atomic(a, truthTableMap, clamps, cache, atomic_set,
+                                     s_hat, s_hat_0, s_hat_1, ref_name)
+        print("pA = {}".format(pA))
+        pB = prob_with_clamps_atomic(b, truthTableMap, clamps, cache, atomic_set,
+                                     s_hat, s_hat_0, s_hat_1, ref_name)
+        return gate_formula(op, pA, pB)
+
+    pY = 0.0
+    for bits in product((0, 1), repeat=len(Z)):
+        pz = _pz_atomic(Z, bits, clamps, s_hat, s_hat_0, s_hat_1, ref_name)
         if pz <= 0.0:
             continue
-        if clamps_base:
-            clamps = {**clamps_base, **z_assign}
-        else:
-            clamps = z_assign
-        pA_z = prob_with_clamps(a, truthTableMap, clamps, cache)
-        pB_z = prob_with_clamps(b, truthTableMap, clamps, cache)
-        total += gate_formula(op, pA_z, pB_z) * pz
-    return total
-
-def _cond_for_one_ref(ref, op, a, b,
-                      s0_a, s1_a, s0_b, s1_b,
-                      truthTableMap, depinfo, inputSigBitNames,
-                      prior_map_or_callable, max_cut):
-    # Independence given {ref}?
-    if depinfo is None or _indep_given(depinfo, a, b, {ref}, pi_set=inputSigBitNames):
-        p0 = incSigProb(s0_a[ref], s0_b[ref], op)
-        p1 = incSigProb(s1_a[ref], s1_b[ref], op)
-        return ref, p0, p1
-    else:
-        # In a worker, we'll fall back to serial cutset enumeration inside these calls
-        p0 = gate_prob_depaware_with_clamps(
-            op, a, b, truthTableMap, depinfo, inputSigBitNames,
-            prior_map_or_callable or {}, {ref: 0}, max_cut
-        )
-        p1 = gate_prob_depaware_with_clamps(
-            op, a, b, truthTableMap, depinfo, inputSigBitNames,
-            prior_map_or_callable or {}, {ref: 1}, max_cut
-        )
-        return ref, p0, p1
-
-# ------------------------------------------------------------------
-# Reconvergence-aware gate probability (unconditional):
-#   choose a small cutset Z from shared ancestors of a and b.
-#   Sum over z in {0,1}^|Z|: P(Y|z) P(z).
-#   NOTE: we *restrict shared ancestors to primary inputs* via inputSigBitNames.
-# ------------------------------------------------------------------
-def gate_prob_depaware(op, a, b, truthTableMap, depinfo,
-                       prior_map_or_callable, inputSigBitNames,
-                       max_cut=3, rare_thresh=0.1):
-    # shared ancestors among primary inputs (exclude the nodes themselves for cutset)
-    Sa = depinfo.ancestors.get(a, set())
-    Sb = depinfo.ancestors.get(b, set())
-    shared = ((Sa | {a}) & (Sb | {b}) & set(inputSigBitNames)) - {a, b}
-
-    if not shared:
+        z_assign = dict(zip(Z, bits))
+        clamps_z = {**clamps, **z_assign}
         cache = {}
-        pA = prob_with_clamps(a, truthTableMap, {}, cache)
-        pB = prob_with_clamps(b, truthTableMap, {}, cache)
-        return gate_formula(op, pA, pB)
+        pA_z = prob_with_clamps_atomic(a, truthTableMap, clamps_z, cache, atomic_set,
+                                       s_hat, s_hat_0, s_hat_1, ref_name)
+        pB_z = prob_with_clamps_atomic(b, truthTableMap, clamps_z, cache, atomic_set,
+                                       s_hat, s_hat_0, s_hat_1, ref_name)
+        pY += gate_formula(op, pA_z, pB_z) * pz
+    return pY
 
-    # pick a small cutset Z ⊆ shared (heuristics: fanout/depth if available)
-    Z = list(shared)
-    if hasattr(depinfo, "fanout"):
-        Z.sort(key=lambda z: -depinfo.fanout.get(z, 0))
-    if hasattr(depinfo, "depth"):
-        Z.sort(key=lambda z: -depinfo.depth.get(z, 0))
-    Z = Z[:max_cut]
 
-    num_assign = 1 << len(Z)
+def populateSigProbs_recon_dp(signalNames, s_hat, s_hat_0, s_hat_1,
+                              truthTableMap, refSigBitNames, inputSigBitNames):
+    universe = set(signalNames) | set(truthTableMap.keys())
+    for exp in truthTableMap.values():
+        universe |= _extract_signal_names(exp)
+    #print("universe", universe)
+    #return
+    # 'top.TSC.beep1[0:0]' in universe
+    # top.TSC.Baud8GeneratorACC[23:23] is in ? yes
+    parents = {s: set() for s in universe}
+    children = {s: set() for s in universe}
+    for s in universe:
+        #if 'Baud8GeneratorACC' in s:
+        #    print("RAFA")
+        exp = truthTableMap.get(s, None)
+        if exp is not None:
+            if s == 'top.TSC.Antena[0:0]@3':
+                print("caramba")
+            ps = _extract_signal_names(exp, self_name=s)
+            parents[s] = ps
+            for p in ps:
+                children.setdefault(p, set()).add(s)
 
-    # Small job or inside a worker → do it serially
-    if num_assign <= CUT_ASSIGN_PAR_MIN or _in_subprocess():
-        pY = 0.0
-        cache = {}
-        for bits in product((0, 1), repeat=len(Z)):
-            pz = _pz(Z, bits, prior_map_or_callable)
-            if pz < rare_thresh:
-                continue
-            z_assign = dict(zip(Z, bits))
-            pA_z = prob_with_clamps(a, truthTableMap, z_assign, cache)
-            pB_z = prob_with_clamps(b, truthTableMap, z_assign, cache)
-            pY += gate_formula(op, pA_z, pB_z) * pz
-        return pY
+    indeg = {s: len(parents.get(s, set())) for s in universe}
+    with open("parents.txt", "a") as f:
+        f.write(f"parents {parents}\n")
+    with open("children.txt", "a") as f:
+        f.write(f"children {children}\n")
+    print("write files")
 
-    # Parallel over assignments (each worker keeps its own cache)
-    all_bits = [bits for bits in product((0, 1), repeat=len(Z))
-                if _pz(Z, bits, prior_map_or_callable) >= rare_thresh]
-    if not all_bits:
-        return 0.0
+    #print("parents ",parents)
+    #print("children ",children)
 
-    workers = min(os.cpu_count() or 4, max(1, len(all_bits) // 4))
-    chunks = _chunk_bits(all_bits, workers)
-    with ProcessPoolExecutor(max_workers=workers) as ex:
-        parts = list(ex.map(
-            _gate_prob_chunk,
-            [op]*len(chunks), [a]*len(chunks), [b]*len(chunks),
-            [truthTableMap]*len(chunks),
-            [None]*len(chunks),  # clamps_base None here
-            [prior_map_or_callable]*len(chunks),
-            chunks, [Z]*len(chunks)
-        ))
-    return sum(parts)
+    q = [s for s, d in indeg.items() if d == 0]
+    #print("q is ",q)
+    #return
+    order = []
+    while q:
+        n = q.pop()
+        order.append(n)
+        for ch in children.get(n, set()):
+            #print("ch = {}".format(ch))
+            #if ch == 'top.tro.lfsr1.lfsr_stream[7:7]':
+            #    print("karina ",indeg[ch])
+            indeg[ch] -= 1
+            if indeg[ch] == 0:
+                q.append(ch)
+    print("finished topo order")
+    #print("order: ", order)
+    #return
+    '''
+    if len(order) < len(universe):
+        remaining = [s for s in universe if s not in order]
+        #print("remaining signals: ",remaining)
+        order.extend(remaining)
+    '''
+    eff_ancestors = {}
+    atomic_set = set(inputSigBitNames) | set(refSigBitNames)
 
-# ------------------------------------------------------------------
-# Same as above, but WITH external clamps (e.g., ref=0/1).
-# We remove clamped names from the cutset, then condition on Z as well.
-#   NOTE: cutset is restricted to primary inputs via inputSigBitNames.
-# ------------------------------------------------------------------
-def gate_prob_depaware_with_clamps(op, a, b, truthTableMap, depinfo,
-                                   inputSigBitNames, prior_map_or_callable, clamps,
-                                   max_cut=3, rare_thresh=0.1):
-    clamp_names = set(clamps.keys())
-    Sa = depinfo.ancestors.get(a, set())
-    Sb = depinfo.ancestors.get(b, set())
-    shared = ((Sa | {a}) & (Sb | {b}) & set(inputSigBitNames)) - (clamp_names | {a, b})
+    known_ops = {"Cond", "Not", "Mix", "And", "Or", "Xor", "Eq", "NotEq",
+                 "Nand", "Nor", "Srl", "Sll", "Plus", "Times", "Minus",
+                 "EqVec", "EqBus"}
+    binary_ops = {"And", "Or", "Xor", "Eq", "NotEq", "Nand", "Nor"}
+    print("start calculation")
+    def _expr_prob(expr, ref_name=None, ref_val=None):
+        if isinstance(expr, int):
+            return float(expr)
+        if isinstance(expr, str):
+            if ref_name is None:
+                return float(s_hat.get(expr, 0.5))
+            table = s_hat_0 if ref_val == 0 else s_hat_1
+            return float(table.get(expr, {}).get(ref_name, s_hat.get(expr, 0.5)))
+        if isinstance(expr, list):
+            op = expr[0] if expr else None
+            if op not in known_ops:
+                return _expr_prob(op, ref_name, ref_val)
+            if op == "Cond":
+                cond = expr[1] if len(expr) > 1 else 0
+                tval = expr[2] if len(expr) > 2 else 0
+                fval = expr[3] if len(expr) > 3 else 0
+                p_cond = _expr_prob(cond, ref_name, ref_val)
+                p_t = _expr_prob(tval, ref_name, ref_val)
+                p_f = _expr_prob(fval, ref_name, ref_val)
+                return p_cond * p_t + (1.0 - p_cond) * p_f
+            if op == "EqVec":
+                bits_a = expr[1] if len(expr) > 1 else []
+                bits_b = expr[2] if len(expr) > 2 else []
+                floor = expr[3] if len(expr) > 3 else 0.0
+                eqps = []
+                for a_elem, b_elem in zip(bits_a, bits_b):
+                    pa = _expr_prob(a_elem, ref_name, ref_val)
+                    pb = b_elem if isinstance(b_elem, int) else _expr_prob(b_elem, ref_name, ref_val)
+                    eqps.append(pa * pb + (1.0 - pa) * (1.0 - pb))
+                val = min(eqps) if eqps else 0.5
+                return max(val, floor)
+            if op == "EqBus":
+                a = expr[1] if len(expr) > 1 else ""
+                b = expr[2] if len(expr) > 2 else 0
+                floor = expr[3] if len(expr) > 3 else 0.0
+                abits = _bits_from_bus(a)
+                bbits = _bits_from_bus(b) if isinstance(b, str) else None
+                if abits is None:
+                    return floor
+                eqps = []
+                for idx, abit in enumerate(abits):
+                    bbit = bbits[idx] if bbits and idx < len(bbits) else (
+                        (b >> idx) & 1 if isinstance(b, int) else b
+                    )
+                    pa = _expr_prob(abit, ref_name, ref_val)
+                    pb = bbit if isinstance(bbit, int) else _expr_prob(bbit, ref_name, ref_val)
+                    eqps.append(pa * pb + (1.0 - pa) * (1.0 - pb))
+                val = min(eqps) if eqps else 0.5
+                return max(val, floor)
+            if op == "Not":
+                c = expr[1] if len(expr) > 1 else 0
+                return 1.0 - _expr_prob(c, ref_name, ref_val)
+            if op == "Mix":
+                parts = expr[1:]
+                if not parts:
+                    return 0.0
+                return sum(_expr_prob(p, ref_name, ref_val) for p in parts) / len(parts)
+            if op in ("Srl", "Sll", "Plus", "Times", "Minus"):
+                left = expr[1] if len(expr) > 1 else 0
+                return _expr_prob(left, ref_name, ref_val)
+            a = expr[1] if len(expr) > 1 else 0
+            b = expr[2] if len(expr) > 2 else 0
+            return gate_formula(op, _expr_prob(a, ref_name, ref_val), _expr_prob(b, ref_name, ref_val))
+        return 0.5
 
-    if not shared:
-        cache = {}
-        pA = prob_with_clamps(a, truthTableMap, clamps, cache)
-        pB = prob_with_clamps(b, truthTableMap, clamps, cache)
-        return gate_formula(op, pA, pB)
+    def _direct_inputs(expr):
+        if isinstance(expr, int):
+            return set()
+        if isinstance(expr, str):
+            return {expr}
+        if isinstance(expr, list):
+            op = expr[0] if expr else None
+            if op not in known_ops:
+                return _direct_inputs(op)
+            return _extract_signal_names(expr)
+        return set()
 
-    Z = list(shared)
-    if hasattr(depinfo, "fanout"):
-        Z.sort(key=lambda z: -depinfo.fanout.get(z, 0))
-    if hasattr(depinfo, "depth"):
-        Z.sort(key=lambda z: -depinfo.depth.get(z, 0))
-    Z = Z[:max_cut]
+    print("all signals ", order)
+    #return
+    for sig in order:
+        #print("-----sig-----: ",sig)
+        if sig == 'top.TSC.Antena[0:0]':
+            print("idan!!!!!! ",truthTableMap[sig])
+        if sig in s_hat:
+            #print("sig in s_hat ")
+            if sig not in eff_ancestors:
+                #print("sig not in eff_ancestors")
+                eff_ancestors[sig] = {sig}
+            continue
 
-    num_assign = 1 << len(Z)
+        exp = truthTableMap.get(sig, None)
+        if exp is None:
+            #print("sig not in truthTableMap")
+            s_hat[sig] = 0.5
+            s_hat_0[sig] = {ref: 0.5 for ref in refSigBitNames}
+            s_hat_1[sig] = {ref: 0.5 for ref in refSigBitNames}
+            eff_ancestors[sig] = {sig}
+            atomic_set.add(sig)
+            continue
 
-    # Small job or inside a worker → do it serially
-    if num_assign <= CUT_ASSIGN_PAR_MIN or _in_subprocess():
-        pY = 0.0
-        cache = {}
-        for bits in product((0, 1), repeat=len(Z)):
-            pz = _pz(Z, bits, prior_map_or_callable)
-            if pz < rare_thresh:
-                continue
-            clamps_z = {**clamps, **dict(zip(Z, bits))}
-            pA_z = prob_with_clamps(a, truthTableMap, clamps_z, cache)
-            pB_z = prob_with_clamps(b, truthTableMap, clamps_z, cache)
-            pY += gate_formula(op, pA_z, pB_z) * pz
-        return pY
-
-    # Parallel over assignments (each worker keeps its own cache)
-    all_bits = [bits for bits in product((0, 1), repeat=len(Z))
-                if _pz(Z, bits, prior_map_or_callable) >= rare_thresh]
-    if not all_bits:
-        return 0.0
-
-    workers = min(os.cpu_count() or 4, max(1, len(all_bits) // 4))
-    chunks = _chunk_bits(all_bits, workers)
-    clamps_base = dict(clamps)
-    with ProcessPoolExecutor(max_workers=workers) as ex:
-        parts = list(ex.map(
-            _gate_prob_chunk,
-            [op]*len(chunks), [a]*len(chunks), [b]*len(chunks),
-            [truthTableMap]*len(chunks),
-            [clamps_base]*len(chunks),
-            [prior_map_or_callable]*len(chunks),
-            chunks, [Z]*len(chunks)
-        ))
-    return sum(parts)
-
-# ------------------------------------------------------------------
-# Small helpers for independence checks using depinfo
-#   NOTE: Independence is checked *only through primary inputs* if pi_set provided.
-# ------------------------------------------------------------------
-def _indep(depinfo, a, b, pi_set=None):
-    Sa = depinfo.ancestors.get(a, set())
-    Sb = depinfo.ancestors.get(b, set())
-    shared = (Sa | {a}) & (Sb | {b})
-    if pi_set is not None:
-        shared &= set(pi_set)
-    return len(shared) == 0
-
-def _indep_given(depinfo, a, b, clamp_names, pi_set=None):
-    clamp_names = set(clamp_names)
-    Sa = depinfo.ancestors.get(a, set()) - clamp_names
-    Sb = depinfo.ancestors.get(b, set()) - clamp_names
-    shared = ( (Sa | ({a} - clamp_names)) & (Sb | ({b} - clamp_names)) )
-    if pi_set is not None:
-        shared &= set(pi_set)
-    return len(shared) == 0
-
-# ------------------------------------------------------------------
-# Public API: populateSigProbs (dependency-aware, conditional-aware)
-#    - s_hat[s]           = P(s=1)
-#    - s_hat_0[s][ref]    = P(s=1 | ref=0)
-#    - s_hat_1[s][ref]    = P(s=1 | ref=1)
-# ------------------------------------------------------------------
-def populateSigProbs(sig, encounteredSigs, s_hat, s_hat_0, s_hat_1,
-                     truthTableMap, refSigBitNames, inputSigBitNames, inputNames,
-                     depinfo=None, prior_map_or_callable=None, max_cut=3):
-    if sig in s_hat:
-        return
-
-    if sig in encounteredSigs:
-        # cycle guard
-        s_hat[sig] = 0.0
-        s_hat_0[sig] = {ref: 0.0 for ref in refSigBitNames}
-        s_hat_1[sig] = {ref: 0.0 for ref in refSigBitNames}
-        return
-
-    encounteredSigs.add(sig)
-
-    if sig in truthTableMap:
-        exp = truthTableMap[sig]
-
-        # constant
         if isinstance(exp, int):
             val = float(exp)
             s_hat[sig] = val
             s_hat_0[sig] = {ref: val for ref in refSigBitNames}
             s_hat_1[sig] = {ref: val for ref in refSigBitNames}
+            eff_ancestors[sig] = set()
+            continue
 
-        # alias
-        elif isinstance(exp, str):
-            populateSigProbs(exp, encounteredSigs, s_hat, s_hat_0, s_hat_1,
-                             truthTableMap, refSigBitNames, inputSigBitNames, inputNames,
-                             depinfo, prior_map_or_callable, max_cut)
-            s_hat[sig] = s_hat[exp]
-            s_hat_0[sig] = {ref: s_hat_0[exp][ref] for ref in refSigBitNames}
-            s_hat_1[sig] = {ref: s_hat_1[exp][ref] for ref in refSigBitNames}
+        if isinstance(exp, str):
+            s_hat[sig] = s_hat.get(exp, 0.5)
+            #print("s_hat[sig] ",s_hat[sig], " for exp ",exp, "s_hat.get(exp) ",s_hat.get(exp))
+            s_hat_0[sig] = {ref: s_hat_0.get(exp, {}).get(ref, 0.5) for ref in refSigBitNames}
+            s_hat_1[sig] = {ref: s_hat_1.get(exp, {}).get(ref, 0.5) for ref in refSigBitNames}
+            eff_ancestors[sig] = eff_ancestors.get(exp, {exp})
+            continue
 
-        # gate
-        elif isinstance(exp, list):
-            op = exp[0]
-            if op == "Not":
-                c = exp[1]
-                populateSigProbs(c, encounteredSigs, s_hat, s_hat_0, s_hat_1,
-                                 truthTableMap, refSigBitNames, inputSigBitNames, inputNames,
-                                 depinfo, prior_map_or_callable, max_cut)
-                s_hat[sig]   = 1.0 - s_hat[c]
-                s_hat_0[sig] = {ref: 1.0 - s_hat_0[c][ref] for ref in refSigBitNames}
-                s_hat_1[sig] = {ref: 1.0 - s_hat_1[c][ref] for ref in refSigBitNames}
+        if isinstance(exp, list):
+            op = exp[0] if exp else None
+            if op not in known_ops:
+                target = op
+                s_hat[sig] = _expr_prob(target)
+                s_hat_0[sig] = {ref: _expr_prob(target, ref, 0) for ref in refSigBitNames}
+                s_hat_1[sig] = {ref: _expr_prob(target, ref, 1) for ref in refSigBitNames}
+                eff_ancestors[sig] = _direct_inputs(target)
+                continue
 
-            else:
-                a, b = exp[1], exp[2]
-                # recurse first so children's s_hat / s_hat_0/1 exist
-                populateSigProbs(a, encounteredSigs, s_hat, s_hat_0, s_hat_1,
-                                 truthTableMap, refSigBitNames, inputSigBitNames, inputNames,
-                                 depinfo, prior_map_or_callable, max_cut)
-                populateSigProbs(b, encounteredSigs, s_hat, s_hat_0, s_hat_1,
-                                 truthTableMap, refSigBitNames, inputSigBitNames, inputNames,
-                                 depinfo, prior_map_or_callable, max_cut)
-
-                # UNCONDITIONAL
-                if depinfo is None or _indep(depinfo, a, b, pi_set=inputSigBitNames):
-                    s_hat[sig] = incSigProb(s_hat[a], s_hat[b], op)
-                else:
-                    s_hat[sig] = gate_prob_depaware(
-                        op, a, b, truthTableMap, depinfo,
-                        prior_map_or_callable or {}, inputSigBitNames, max_cut
+            if op in binary_ops:
+                a = exp[1] if len(exp) > 1 else 0
+                b = exp[2] if len(exp) > 2 else 0
+                anc_a = eff_ancestors.get(a, _direct_inputs(a)) if isinstance(a, str) else _direct_inputs(a)
+                anc_b = eff_ancestors.get(b, _direct_inputs(b)) if isinstance(b, str) else _direct_inputs(b)
+                shared = anc_a & anc_b
+                #print("exp: ", exp, " anc_a ", anc_a, " anc_b ", anc_b, " shared ", shared)
+                if shared:
+                    print("exp: ", exp, " anc_a ", anc_a, " anc_b ", anc_b, " shared ", shared)
+                    Z = sorted(shared)
+                    s_hat[sig] = gate_prob_recon_dp(
+                        op, a, b, Z, truthTableMap, {},
+                        atomic_set, s_hat, s_hat_0, s_hat_1, ref_name=None
                     )
 
-                # CONDITIONAL per ref (parallelized when many refs)
-                s_hat_0[sig] = {}
-                s_hat_1[sig] = {}
-
-                s0_a, s1_a = s_hat_0[a], s_hat_1[a]
-                s0_b, s1_b = s_hat_0[b], s_hat_1[b]
-
-                do_parallel = (len(refSigBitNames) >= PAR_REF_THRESHOLD) and not _in_subprocess()
-
-                if do_parallel:
-                    max_workers = min(os.cpu_count() or 4, len(refSigBitNames))
-                    with ProcessPoolExecutor(max_workers=max_workers) as ex:
-                        futs = [
-                            ex.submit(_cond_for_one_ref, ref, op, a, b,
-                                      s0_a, s1_a, s0_b, s1_b,
-                                      truthTableMap, depinfo, inputSigBitNames,
-                                      prior_map_or_callable, max_cut)
-                            for ref in refSigBitNames
-                        ]
-                        for f in as_completed(futs):
-                            r, p0, p1 = f.result()
-                            s_hat_0[sig][r] = p0
-                            s_hat_1[sig][r] = p1
-                else:
+                    print("finish s_hat")
+                    s_hat_0[sig] = {}
+                    s_hat_1[sig] = {}
                     for ref in refSigBitNames:
-                        r, p0, p1 = _cond_for_one_ref(ref, op, a, b,
-                                                      s0_a, s1_a, s0_b, s1_b,
-                                                      truthTableMap, depinfo, inputSigBitNames,
-                                                      prior_map_or_callable, max_cut)
-                        s_hat_0[sig][r] = p0
-                        s_hat_1[sig][r] = p1
+                        z_eff = [z for z in Z if z != ref]
+                        s_hat_0[sig][ref] = gate_prob_recon_dp(
+                            op, a, b, z_eff, truthTableMap, {ref: 0},
+                            atomic_set, s_hat, s_hat_0, s_hat_1, ref_name=ref
+                        )
+                        s_hat_1[sig][ref] = gate_prob_recon_dp(
+                            op, a, b, z_eff, truthTableMap, {ref: 1},
+                            atomic_set, s_hat, s_hat_0, s_hat_1, ref_name=ref
+                        )
+                    eff_ancestors[sig] = {sig}
+                    atomic_set.add(sig)
+                    #print("idan")
+                else:
+                    s_hat[sig] = incSigProb(_expr_prob(a), _expr_prob(b), op)
+                    s_hat_0[sig] = {ref: incSigProb(_expr_prob(a, ref, 0),
+                                                    _expr_prob(b, ref, 0), op)
+                                    for ref in refSigBitNames}
+                    s_hat_1[sig] = {ref: incSigProb(_expr_prob(a, ref, 1),
+                                                    _expr_prob(b, ref, 1), op)
+                                    for ref in refSigBitNames}
+                    eff_ancestors[sig] = _direct_inputs(exp)
+                continue
 
-    else:
-        # Unknown net (shouldn't happen for well-formed maps)
+            s_hat[sig] = _expr_prob(exp)
+            s_hat_0[sig] = {ref: _expr_prob(exp, ref, 0) for ref in refSigBitNames}
+            s_hat_1[sig] = {ref: _expr_prob(exp, ref, 1) for ref in refSigBitNames}
+            eff_ancestors[sig] = _direct_inputs(exp)
+            continue
+
         s_hat[sig] = 0.5
         s_hat_0[sig] = {ref: 0.5 for ref in refSigBitNames}
         s_hat_1[sig] = {ref: 0.5 for ref in refSigBitNames}
-
-    encounteredSigs.remove(sig)
-
-# ------------------------------------------------------------------
-# Picklable DepInfo (moved to top-level so it can be sent to workers)
-# ------------------------------------------------------------------
-class DepInfo:
-    __slots__ = ("ancestors", "parents", "fanout", "depth", "universe")
-    def __init__(self, ancestors, parents, fanout, depth, universe):
-        self.ancestors = ancestors
-        self.parents   = parents
-        self.fanout    = fanout
-        self.depth     = depth
-        self.universe  = universe
-
-# ------------------------------------------------------------------
-# Dependency extraction (parents / fanout / depth / ancestors)
-# over the FULL universe: design signals + internal pins in exps.
-# ------------------------------------------------------------------
-def build_dependency_info(truthTableMap, signalNames):
-    universe = set(signalNames) | set(truthTableMap.keys())
-    for exp in truthTableMap.values():
-        universe |= _extract_signal_names(exp)
-
-    # immediate parents
-    parents = {s: set() for s in universe}
-    for s in universe:
-        exp = truthTableMap.get(s, None)
-        if exp is not None:
-            parents[s] = _extract_signal_names(exp)
-
-    # fanout
-    fanout = {s: 0 for s in universe}
-    for s, ps in parents.items():
-        for p in ps:
-            fanout[p] = fanout.get(p, 0) + 1
-
-    # depth (cycle-safe)
-    depth_memo, visiting = {}, set()
-    def depth_of(s):
-        if s in depth_memo:
-            return depth_memo[s]
-        if s in visiting:
-            depth_memo[s] = 0
-            return 0
-        visiting.add(s)
-        ps = parents.get(s, set())
-        d = 0 if not ps else 1 + max(depth_of(p) for p in ps)
-        visiting.remove(s)
-        depth_memo[s] = d
-        return d
-    depth = {s: depth_of(s) for s in universe}
-
-    # ancestors (transitive closure; cycle-safe)
-    anc_memo, visiting = {}, set()
-    def ancestors_of(s):
-        if s in anc_memo:
-            return anc_memo[s]
-        if s in visiting:
-            return set()
-        visiting.add(s)
-        ps = parents.get(s, set())
-        ancs = set(ps)
-        for p in ps:
-            ancs |= ancestors_of(p)
-        visiting.remove(s)
-        anc_memo[s] = ancs
-        return ancs
-    ancestors = {s: ancestors_of(s) for s in universe}
-
-    return DepInfo(ancestors=ancestors, parents=parents, fanout=fanout, depth=depth, universe=universe)
+        eff_ancestors[sig] = {sig}
+        atomic_set.add(sig)
