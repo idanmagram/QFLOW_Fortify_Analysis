@@ -458,7 +458,7 @@ def populateSigProbs_recon_dp(signalNames, s_hat, s_hat_0, s_hat_1,
         if sig in s_hat:
             #print("sig in s_hat ")
             if sig not in eff_ancestors:
-                #print("sig not in eff_ancestors")
+                print("sig not in eff_ancestors ",sig)
                 eff_ancestors[sig] = {sig}
             continue
 
@@ -537,7 +537,21 @@ def populateSigProbs_recon_dp(signalNames, s_hat, s_hat_0, s_hat_1,
                     s_hat_1[sig] = {ref: incSigProb(_expr_prob(a, ref, 1),
                                                     _expr_prob(b, ref, 1), op)
                                     for ref in refSigBitNames}
-                    eff_ancestors[sig] = _direct_inputs(exp)
+                    # propagate upstream ancestors so multi-level reconvergence is detectable
+                    merged_anc = list(anc_a | anc_b)
+                    if len(merged_anc) > 3:
+                        merged_anc = merged_anc[:3]
+                    eff_ancestors[sig] = set(merged_anc)
+                continue
+
+            if op == "Not":
+                c = exp[1] if len(exp) > 1 else 0
+                c_anc = eff_ancestors.get(c, _direct_inputs(c)) if isinstance(c, str) else _direct_inputs(c)
+                s_hat[sig] = _expr_prob(exp)
+                s_hat_0[sig] = {ref: _expr_prob(exp, ref, 0) for ref in refSigBitNames}
+                s_hat_1[sig] = {ref: _expr_prob(exp, ref, 1) for ref in refSigBitNames}
+                # propagate upstream ancestors through NOT
+                eff_ancestors[sig] = c_anc
                 continue
 
             s_hat[sig] = _expr_prob(exp)
