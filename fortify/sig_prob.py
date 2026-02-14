@@ -36,6 +36,15 @@ def populateSigProbs(sig, encounteredSigs, s_hat, s_hat_0, s_hat_1, truthTableMa
     # to avoid recomputation of already calculated signal probability values
     if key in s_hat:
         return
+    #print("key = ", key)
+    if key == "top.TSC.Tj_Trig[0:0]@1":
+        print("Tali")
+
+    if isinstance(key, str) and "Tj_Trig[0:0]" in key:
+        s_hat[key] = 0
+        s_hat_0[key] = {ref: 0 for ref in refSigBitNames}
+        s_hat_1[key] = {ref: 0 for ref in refSigBitNames}
+        return
 
     # to avoid infinite recursion caused by circular dependencies, assigning zero signal probabilities
     if key in encounteredSigs:
@@ -341,8 +350,7 @@ def populateSigProbs(sig, encounteredSigs, s_hat, s_hat_0, s_hat_1, truthTableMa
                     #    p1[ref] += s_hat_1.get(_key(bitname), {}).get(ref, 0.5)
 
                 #prod = p
-                if "top.U_RSA.exp[31:0]@5" in sig:
-                    print("hi")
+
 
                 #if num_bits > 0:
                 #    for ref in refSigBitNames:

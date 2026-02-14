@@ -59,7 +59,7 @@ def estimate_c_and_pbv_from_conditional_probs(s_hat_0, s_hat_1, s_hat,
 
 def main(input_file_path, top_module_name, ref_module_name, ref_instance_name,
          ref_sig_name, ref_sig_width, design, leaks_file_path, time_file_path,
-         reconvergence_aware=False):
+         reconvergence_aware=False, subgraph_path=None):
     startTime = time.time()
 
     print("\n ******************************************************************")
@@ -128,9 +128,20 @@ def main(input_file_path, top_module_name, ref_module_name, ref_instance_name,
 
     if reconvergence_aware:
         print("reconnnnnn")
+        recon_only_set = None
+        if subgraph_path:
+            try:
+                with open(subgraph_path, "r") as f:
+                    recon_only_set = {line.strip() for line in f if line.strip()}
+                print(f"Loaded reconvergence subgraph: {len(recon_only_set)} nodes")
+            except Exception as e:
+                print(f"Failed to read subgraph file {subgraph_path}: {e}")
+                recon_only_set = None
+        #print("recon_only_set ", recon_only_set)
         sig_prob_recon.populateSigProbs_recon_dp(
             signalNames, s_hat, s_hat_0, s_hat_1,
-            truthTableMap, refSigBitNames, inputSigBitNames
+            truthTableMap, refSigBitNames, inputSigBitNames,
+            recon_only_set=recon_only_set
         )
     else:
         for sig in tqdm(signalNames, desc="Signal Probability Calculation"):
@@ -148,11 +159,11 @@ def main(input_file_path, top_module_name, ref_module_name, ref_instance_name,
     with open("s_hat.txt", "w") as f:
         print("s_hat", s_hat, file=f)
 
-    with open("s_hat_0.txt", "w") as f:
-        print("s_hat_0", s_hat_0, file=f)
+    #with open("s_hat_0.txt", "w") as f:
+    #    print("s_hat_0", s_hat_0, file=f)
 
-    with open("s_hat_1.txt", "w") as f:
-        print("s_hat_1", s_hat_1, file=f)
+    #with open("s_hat_1.txt", "w") as f:
+    #    print("s_hat_1", s_hat_1, file=f)
 
         # print("s_hat0: ",s_hat_0)
         # print("s_hat1: ", s_hat_1)
@@ -170,8 +181,7 @@ def main(input_file_path, top_module_name, ref_module_name, ref_instance_name,
 
     print("outputSigBitNames ", outputSigBitNames)
     results = estimate_c_and_pbv_from_conditional_probs(
-        s_hat_0, s_hat_1, s_hat, refSigBitNames, signalNames, target_signals=outputSigBitNames
-    )
+        s_hat_0, s_hat_1, s_hat, refSigBitNames, signalNames, target_signals=outputSigBitNames)
     # aggregate per base signal/ref (max over time slices)
     aggregated = {}
     for (sig, ref), metrics in results.items():
@@ -181,10 +191,10 @@ def main(input_file_path, top_module_name, ref_module_name, ref_instance_name,
         if key not in aggregated or metrics['Leakage'] > aggregated[key]['Leakage']:
             aggregated[key] = metrics
 
-    top_10 = sorted(aggregated.items(), key=lambda x: x[1]['Leakage'], reverse=True)[:500]
+    top_150 = sorted(aggregated.items(), key=lambda x: x[1]['Leakage'], reverse=True)[:150]
 
-    print("\nTop 10 signals with highest leakage:")
-    for (sig, ref), metrics in top_10:
+    print("\nTop 150 signals with highest leakage:")
+    for (sig, ref), metrics in top_150:
         print(f"Signal: {sig}, Ref: {ref}, "f"Leakage: {metrics['Leakage']:.15f}, PBV: {metrics['PBV']:.15f}")
 
     sigLeaks = {}
@@ -195,6 +205,7 @@ def main(input_file_path, top_module_name, ref_module_name, ref_instance_name,
     baseLeak = 1.0 / math.sqrt(ref_sig_width)
 
     # leakage score calculation
+    print("sigWidths ",sigWidths)
     for sig in tqdm(sigWidths, desc="Leakage calculation"):
         width = sigWidths[sig]
         leakages = []
@@ -225,6 +236,8 @@ def main(input_file_path, top_module_name, ref_module_name, ref_instance_name,
 
     print()
     endTime = time.time()
+    #with open("leaks_file_path.txt", "w") as f:
+    #    print(sigLeaks, file=f)
 
     print("Number of signals: {}".format(len(sigLeaks)))
     print("Total time taken: {:.4f}s".format(endTime - startTime))
@@ -248,6 +261,8 @@ if __name__ == '__main__':
     my_parser.add_argument('Design',          metavar='design',            type=str)
     my_parser.add_argument('--reconvergence-aware', action='store_true',
                            help='enable reconvergence cone DP (collapse cones once resolved)')
+    my_parser.add_argument('--subgraph-path', type=str, action='store',
+                           help='path to subgraph nodes (one per line) to limit reconvergence')
     my_parser.add_argument('-r', '--results-path', type=str, action='store',
                            help='name of directory within results/ directory to store results')
 
@@ -277,5 +292,5 @@ if __name__ == '__main__':
     main(args.InputFilePath, args.TopModuleName,
          args.RefModuleName, args.RefInstanceName,
          args.RefSigName, args.RefSigWidth, args.Design, leaks_file_path, time_file_path,
-         reconvergence_aware=args.reconvergence_aware)
+         reconvergence_aware=args.reconvergence_aware, subgraph_path=args.subgraph_path)
     print("Runtime:", time.time() - start, "seconds")

@@ -309,7 +309,8 @@ def gate_prob_recon_dp(op, a, b, Z, truthTableMap, clamps, atomic_set,
 
 
 def populateSigProbs_recon_dp(signalNames, s_hat, s_hat_0, s_hat_1,
-                              truthTableMap, refSigBitNames, inputSigBitNames):
+                              truthTableMap, refSigBitNames, inputSigBitNames,
+                              recon_only_set=None):
     universe = set(signalNames) | set(truthTableMap.keys())
     for exp in truthTableMap.values():
         universe |= _extract_signal_names(exp)
@@ -324,8 +325,6 @@ def populateSigProbs_recon_dp(signalNames, s_hat, s_hat_0, s_hat_1,
         #    print("RAFA")
         exp = truthTableMap.get(s, None)
         if exp is not None:
-            if s == 'top.TSC.Antena[0:0]@3':
-                print("caramba")
             ps = _extract_signal_names(exp, self_name=s)
             parents[s] = ps
             for p in ps:
@@ -449,16 +448,14 @@ def populateSigProbs_recon_dp(signalNames, s_hat, s_hat_0, s_hat_1,
             return _extract_signal_names(expr)
         return set()
 
-    print("all signals ", order)
+    #print("all signals ", order)
     #return
     for sig in order:
         #print("-----sig-----: ",sig)
         if sig == 'top.TSC.Antena[0:0]':
             print("idan!!!!!! ",truthTableMap[sig])
         if sig in s_hat:
-            #print("sig in s_hat ")
             if sig not in eff_ancestors:
-                print("sig not in eff_ancestors ",sig)
                 eff_ancestors[sig] = {sig}
             continue
 
@@ -495,6 +492,7 @@ def populateSigProbs_recon_dp(signalNames, s_hat, s_hat_0, s_hat_1,
                 s_hat[sig] = _expr_prob(target)
                 s_hat_0[sig] = {ref: _expr_prob(target, ref, 0) for ref in refSigBitNames}
                 s_hat_1[sig] = {ref: _expr_prob(target, ref, 1) for ref in refSigBitNames}
+                #print("1eff_ancestors[sig] = ", eff_ancestors[sig]," of sig ",sig)
                 eff_ancestors[sig] = _direct_inputs(target)
                 continue
 
@@ -505,7 +503,11 @@ def populateSigProbs_recon_dp(signalNames, s_hat, s_hat_0, s_hat_1,
                 anc_b = eff_ancestors.get(b, _direct_inputs(b)) if isinstance(b, str) else _direct_inputs(b)
                 shared = anc_a & anc_b
                 #print("exp: ", exp, " anc_a ", anc_a, " anc_b ", anc_b, " shared ", shared)
-                if shared:
+                #if sig == 'top.TSC.beeps[0:0]@1':
+                #    print("Karina exp: ", exp, " anc_a ", anc_a, " anc_b ", anc_b, " shared ", shared)
+                #    print("eff_ancestors.get(a, _direct_inputs(a)) ",eff_ancestors.get(a, _direct_inputs(a)), " _direct_inputs(a) ", _direct_inputs(a))
+                #    print("eff_ancestors.get(b, _direct_inputs(b)) ",eff_ancestors.get(b, _direct_inputs(b)), " _direct_inputs(b) ", _direct_inputs(b))
+                if shared and (recon_only_set is None or sig in recon_only_set):
                     print("exp: ", exp, " anc_a ", anc_a, " anc_b ", anc_b, " shared ", shared)
                     Z = sorted(shared)
                     s_hat[sig] = gate_prob_recon_dp(
@@ -526,7 +528,10 @@ def populateSigProbs_recon_dp(signalNames, s_hat, s_hat_0, s_hat_1,
                             op, a, b, z_eff, truthTableMap, {ref: 1},
                             atomic_set, s_hat, s_hat_0, s_hat_1, ref_name=ref
                         )
+
                     eff_ancestors[sig] = {sig}
+                    #print("2eff_ancestors[sig] = ", eff_ancestors[sig], " of sig ", sig)
+
                     atomic_set.add(sig)
                     #print("idan")
                 else:
@@ -539,9 +544,12 @@ def populateSigProbs_recon_dp(signalNames, s_hat, s_hat_0, s_hat_1,
                                     for ref in refSigBitNames}
                     # propagate upstream ancestors so multi-level reconvergence is detectable
                     merged_anc = list(anc_a | anc_b)
-                    if len(merged_anc) > 3:
-                        merged_anc = merged_anc[:3]
+                    #if len(merged_anc) > 3:
+                    #    merged_anc = merged_anc[:3]
+
                     eff_ancestors[sig] = set(merged_anc)
+                    #print("3eff_ancestors[sig] = ", eff_ancestors[sig], " of sig ", sig)
+
                 continue
 
             if op == "Not":
@@ -552,12 +560,16 @@ def populateSigProbs_recon_dp(signalNames, s_hat, s_hat_0, s_hat_1,
                 s_hat_1[sig] = {ref: _expr_prob(exp, ref, 1) for ref in refSigBitNames}
                 # propagate upstream ancestors through NOT
                 eff_ancestors[sig] = c_anc
+                #print("4eff_ancestors[sig] = ", eff_ancestors[sig]," of sig ",sig)
+
                 continue
 
             s_hat[sig] = _expr_prob(exp)
             s_hat_0[sig] = {ref: _expr_prob(exp, ref, 0) for ref in refSigBitNames}
             s_hat_1[sig] = {ref: _expr_prob(exp, ref, 1) for ref in refSigBitNames}
             eff_ancestors[sig] = _direct_inputs(exp)
+            #print("5eff_ancestors[sig] = ", eff_ancestors[sig], " of sig ", sig)
+
             continue
 
         s_hat[sig] = 0.5
