@@ -30,7 +30,7 @@ def _key(sig):
 def populateSigProbs(sig, encounteredSigs, s_hat, s_hat_0, s_hat_1, truthTableMap, refSigBitNames, inputSigBitNames):
     key = _key(sig)
     fallback = 0.5
-    if key == "top.tro.lfsr1.lfsr_stream[0:0]":
+    if key == "top.Tj_Trigger.Detected[0:0]":
         print("idna")
 
     # to avoid recomputation of already calculated signal probability values

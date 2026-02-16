@@ -1210,6 +1210,16 @@ def build_time_unrolled_truth_table(truthTableMap, H=0):
             rhs = _expand_eq(expr)
             unrolled[lhs] = _simplify(rhs)
             sigs.add(lhs)
+
+    # Ensure time-0 aliases exist for loop/seq bases so references like key@0
+    # resolve to the non-time-indexed signal when no explicit @0 entry exists.
+    for key in truthTableMap.keys():
+        base = _base(key)
+        if base in reach:
+            t0 = f"{key}@0"
+            if t0 not in unrolled:
+                unrolled[t0] = key
+                sigs.add(t0)
     return unrolled, sigs
 
 
