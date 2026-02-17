@@ -309,7 +309,7 @@ def gate_prob_recon_dp(op, a, b, Z, truthTableMap, clamps, atomic_set,
 
 
 def populateSigProbs_recon_dp(signalNames, s_hat, s_hat_0, s_hat_1,
-                              truthTableMap, refSigBitNames, inputSigBitNames,
+                              truthTableMap, refSigBitNames, inputSigBitNames, sigWidths,
                               recon_only_set=None):
     universe = set(signalNames) | set(truthTableMap.keys())
     for exp in truthTableMap.values():
@@ -325,12 +325,17 @@ def populateSigProbs_recon_dp(signalNames, s_hat, s_hat_0, s_hat_1,
         #    print("RAFA")
         exp = truthTableMap.get(s, None)
         if exp is not None:
+            if isinstance(exp, str) and isinstance(s, str) and s.endswith("@0") and exp == s[:-2]:
+                # Treat @0 aliases as pure aliases (no dependency edge).
+                continue
             ps = _extract_signal_names(exp, self_name=s)
             parents[s] = ps
             for p in ps:
                 children.setdefault(p, set()).add(s)
 
     indeg = {s: len(parents.get(s, set())) for s in universe}
+    #print("indeg ",indeg)
+    #return
     with open("parents.txt", "a") as f:
         f.write(f"parents {parents}\n")
     with open("children.txt", "a") as f:
@@ -348,9 +353,6 @@ def populateSigProbs_recon_dp(signalNames, s_hat, s_hat_0, s_hat_1,
         n = q.pop()
         order.append(n)
         for ch in children.get(n, set()):
-            #print("ch = {}".format(ch))
-            #if ch == 'top.tro.lfsr1.lfsr_stream[7:7]':
-            #    print("karina ",indeg[ch])
             indeg[ch] -= 1
             if indeg[ch] == 0:
                 q.append(ch)
@@ -371,6 +373,46 @@ def populateSigProbs_recon_dp(signalNames, s_hat, s_hat_0, s_hat_1,
                  "EqVec", "EqBus"}
     binary_ops = {"And", "Or", "Xor", "Eq", "NotEq", "Nand", "Nor"}
     print("start calculation")
+
+    def _is_input_reachable(bit_name):
+        if bit_name in inputSigBitNames:
+            return True
+        seen = set()
+        stack = [bit_name]
+        while stack:
+            n = stack.pop()
+            if n in seen:
+                continue
+            seen.add(n)
+            for p in parents.get(n, set()):
+                print("p ",p)
+                if p in inputSigBitNames or p+'@0' in inputSigBitNames:
+                    return True
+                stack.append(p)
+        return False
+
+    def _expr_input_reachable(expr):
+        if isinstance(expr, int):
+            return False
+        if isinstance(expr, str):
+            bits = _bits_from_bus(expr)
+            if bits is None:
+                return _is_input_reachable(expr)
+            #return all(_is_input_reachable(b) for b in bits)
+            return (_is_input_reachable(bits[0]))
+        if isinstance(expr, list):
+            refs = _extract_signal_names(expr)
+            for r in refs:
+                bits = _bits_from_bus(r)
+                if bits is None:
+                    if _is_input_reachable(r):
+                        return True
+                else:
+                    if all(_is_input_reachable(b) for b in bits):
+                        return True
+            return False
+        return False
+
     def _expr_prob(expr, ref_name=None, ref_val=None):
         if isinstance(expr, int):
             return float(expr)
@@ -433,6 +475,12 @@ def populateSigProbs_recon_dp(signalNames, s_hat, s_hat_0, s_hat_1,
                 return _expr_prob(left, ref_name, ref_val)
             a = expr[1] if len(expr) > 1 else 0
             b = expr[2] if len(expr) > 2 else 0
+            if op == "Eq" and 'count' not in a:
+                print("a 2 is ", a)
+            if op == "Eq" and (a in sigWidths and sigWidths[a] > 10):
+                if (isinstance(a, int) and _expr_input_reachable(b)) or (
+                        isinstance(b, int) and _expr_input_reachable(a)):
+                    return 1.0
             return gate_formula(op, _expr_prob(a, ref_name, ref_val), _expr_prob(b, ref_name, ref_val))
         return 0.5
 
@@ -452,7 +500,7 @@ def populateSigProbs_recon_dp(signalNames, s_hat, s_hat_0, s_hat_1,
     #return
     for sig in order:
         #print("-----sig-----: ",sig)
-        if sig == 'top.TSC.Antena[0:0]':
+        if sig == 'top.U_RSA.cypher[0:0]@1':
             print("idan!!!!!! ",truthTableMap[sig])
         if sig in s_hat:
             if sig not in eff_ancestors:
@@ -499,6 +547,19 @@ def populateSigProbs_recon_dp(signalNames, s_hat, s_hat_0, s_hat_1,
             if op in binary_ops:
                 a = exp[1] if len(exp) > 1 else 0
                 b = exp[2] if len(exp) > 2 else 0
+                if op == "Eq" and "data" in a:
+                    print("a is ", a)
+                if op == "Eq" and 'count' not in a:
+                    print("a 1 is ", a)
+                    if (isinstance(a, int) and _expr_input_reachable(b)) or (
+                            isinstance(b, int) and _expr_input_reachable(a)):
+                        s_hat[sig] = 1.0
+                        s_hat_0[sig] = {ref: 1.0 for ref in refSigBitNames}
+                        s_hat_1[sig] = {ref: 1.0 for ref in refSigBitNames}
+                        eff_ancestors[sig] = {sig}
+                        atomic_set.add(sig)
+                        continue
+
                 anc_a = eff_ancestors.get(a, _direct_inputs(a)) if isinstance(a, str) else _direct_inputs(a)
                 anc_b = eff_ancestors.get(b, _direct_inputs(b)) if isinstance(b, str) else _direct_inputs(b)
                 shared = anc_a & anc_b

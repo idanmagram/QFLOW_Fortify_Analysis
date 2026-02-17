@@ -140,8 +140,8 @@ def main(input_file_path, top_module_name, ref_module_name, ref_instance_name,
         #print("recon_only_set ", recon_only_set)
         sig_prob_recon.populateSigProbs_recon_dp(
             signalNames, s_hat, s_hat_0, s_hat_1,
-            truthTableMap, refSigBitNames, inputSigBitNames,
-            recon_only_set=recon_only_set
+            truthTableMap, refSigBitNames, inputSigBitNames, sigWidths,
+            recon_only_set=recon_only_set,
         )
     else:
         for sig in tqdm(signalNames, desc="Signal Probability Calculation"):
@@ -179,7 +179,7 @@ def main(input_file_path, top_module_name, ref_module_name, ref_instance_name,
                 for t in range(UNROLL_DEPTH + 1):
                     outputSigBitNames.append(f"{top_module_name}.{oname}[{i}:{i}]@{t}")
 
-    print("outputSigBitNames ", outputSigBitNames)
+    #print("outputSigBitNames ", outputSigBitNames)
     results = estimate_c_and_pbv_from_conditional_probs(
         s_hat_0, s_hat_1, s_hat, refSigBitNames, signalNames, target_signals=outputSigBitNames)
     # aggregate per base signal/ref (max over time slices)
