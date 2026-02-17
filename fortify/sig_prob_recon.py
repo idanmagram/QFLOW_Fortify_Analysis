@@ -385,7 +385,7 @@ def populateSigProbs_recon_dp(signalNames, s_hat, s_hat_0, s_hat_1,
                 continue
             seen.add(n)
             for p in parents.get(n, set()):
-                print("p ",p)
+                print("p ",p, "for bit_name ",bit_name)
                 if p in inputSigBitNames or p+'@0' in inputSigBitNames:
                     return True
                 stack.append(p)
@@ -408,8 +408,9 @@ def populateSigProbs_recon_dp(signalNames, s_hat, s_hat_0, s_hat_1,
                     if _is_input_reachable(r):
                         return True
                 else:
-                    if all(_is_input_reachable(b) for b in bits):
-                        return True
+                    #if all(_is_input_reachable(b) for b in bits):
+                    #    return True
+                    return (_is_input_reachable(bits[0]))
             return False
         return False
 
@@ -445,9 +446,15 @@ def populateSigProbs_recon_dp(signalNames, s_hat, s_hat_0, s_hat_1,
                 val = min(eqps) if eqps else 0.5
                 return max(val, floor)
             if op == "EqBus":
+
                 a = expr[1] if len(expr) > 1 else ""
                 b = expr[2] if len(expr) > 2 else 0
+                #if a == "top.U_RSA.indata[31:0]":
+                    #print("lior")
                 floor = expr[3] if len(expr) > 3 else 0.0
+                if (not isinstance(a, int) and '[0:0]' not in a and _expr_input_reachable(a) ) or (
+                      not  isinstance(b, int) and '[0:0]' not in b and _expr_input_reachable(b)):
+                    return 1.0
                 abits = _bits_from_bus(a)
                 bbits = _bits_from_bus(b) if isinstance(b, str) else None
                 if abits is None:
@@ -455,8 +462,7 @@ def populateSigProbs_recon_dp(signalNames, s_hat, s_hat_0, s_hat_1,
                 eqps = []
                 for idx, abit in enumerate(abits):
                     bbit = bbits[idx] if bbits and idx < len(bbits) else (
-                        (b >> idx) & 1 if isinstance(b, int) else b
-                    )
+                        (b >> idx) & 1 if isinstance(b, int) else b)
                     pa = _expr_prob(abit, ref_name, ref_val)
                     pb = bbit if isinstance(bbit, int) else _expr_prob(bbit, ref_name, ref_val)
                     eqps.append(pa * pb + (1.0 - pa) * (1.0 - pb))
@@ -547,10 +553,7 @@ def populateSigProbs_recon_dp(signalNames, s_hat, s_hat_0, s_hat_1,
             if op in binary_ops:
                 a = exp[1] if len(exp) > 1 else 0
                 b = exp[2] if len(exp) > 2 else 0
-                if op == "Eq" and "data" in a:
-                    print("a is ", a)
-                if op == "Eq" and 'count' not in a:
-                    print("a 1 is ", a)
+                if op == "Eq":
                     if (isinstance(a, int) and _expr_input_reachable(b)) or (
                             isinstance(b, int) and _expr_input_reachable(a)):
                         s_hat[sig] = 1.0
@@ -563,11 +566,6 @@ def populateSigProbs_recon_dp(signalNames, s_hat, s_hat_0, s_hat_1,
                 anc_a = eff_ancestors.get(a, _direct_inputs(a)) if isinstance(a, str) else _direct_inputs(a)
                 anc_b = eff_ancestors.get(b, _direct_inputs(b)) if isinstance(b, str) else _direct_inputs(b)
                 shared = anc_a & anc_b
-                #print("exp: ", exp, " anc_a ", anc_a, " anc_b ", anc_b, " shared ", shared)
-                #if sig == 'top.TSC.beeps[0:0]@1':
-                #    print("Karina exp: ", exp, " anc_a ", anc_a, " anc_b ", anc_b, " shared ", shared)
-                #    print("eff_ancestors.get(a, _direct_inputs(a)) ",eff_ancestors.get(a, _direct_inputs(a)), " _direct_inputs(a) ", _direct_inputs(a))
-                #    print("eff_ancestors.get(b, _direct_inputs(b)) ",eff_ancestors.get(b, _direct_inputs(b)), " _direct_inputs(b) ", _direct_inputs(b))
                 if shared and (recon_only_set is None or sig in recon_only_set):
                     print("exp: ", exp, " anc_a ", anc_a, " anc_b ", anc_b, " shared ", shared)
                     Z = sorted(shared)

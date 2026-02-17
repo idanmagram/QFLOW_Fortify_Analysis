@@ -1148,29 +1148,11 @@ def build_time_unrolled_truth_table(truthTableMap, H=0):
 
             abits = _bits(a)
             bbits = _bits(b)
-            base_a = _base(a) if abits else None
-            base_b = _base(b) if bbits else None
-            loop_a = base_a in loop_bases if base_a else False
-            loop_b = base_b in loop_bases if base_b else False
             if abits and bbits and len(abits) == len(bbits):
-                if loop_a or loop_b:
-                    terms = [["Eq", ai, bi] for ai, bi in zip(abits, bbits)]
-                    acc = terms[0]
-                    for t in terms[1:]:
-                        acc = ["And", acc, t]
-                    return acc
-                else:
-                    return ["EqBus", a, b, 0.0001]
+                return ["EqBus", a, b, 0.1]
             elif abits and isinstance(b, int):
                 bits = [(b >> i) & 1 for i in range(len(abits))]
-                if loop_a:
-                    terms = [["Eq", ai, bits[i]] for i, ai in enumerate(abits)]
-                    acc = terms[0]
-                    for t in terms[1:]:
-                        acc = ["And", acc, t]
-                    return acc
-                else:
-                    return ["EqBus", a, b, 0.0001]
+                return ["EqBus", a, b, 0.1]
             else:
                 return expr
         return [expr[0]] + [_expand_eq(e) for e in expr[1:]]
@@ -1221,6 +1203,41 @@ def build_time_unrolled_truth_table(truthTableMap, H=0):
                 unrolled[t0] = key
                 sigs.add(t0)
     return unrolled, sigs
+
+
+# Normalize Eq on buses to EqBus across the truth table (non-unrolled case).
+def normalize_eqbus(truthTableMap):
+    def _bits(bus):
+        if isinstance(bus, str) and "[" in bus and ":" in bus and bus.endswith("]"):
+            try:
+                base = bus.split("[", 1)[0]
+                rng = bus.split("[", 1)[1].split("]")[0]
+                msb, lsb = map(int, rng.split(":"))
+                return [f"{base}[{i}:{i}]" for i in range(lsb, msb + 1)]
+            except Exception:
+                return None
+        return None
+
+    def _rewrite(expr):
+        if not isinstance(expr, list):
+            return expr
+        op = expr[0]
+        if op == "Eq":
+            a = expr[1] if len(expr) > 1 else None
+            b = expr[2] if len(expr) > 2 else None
+            abits = _bits(a)
+            bbits = _bits(b)
+            if abits and bbits and len(abits) == len(bbits):
+                return ["EqBus", a, b, 0.1]
+            if abits and isinstance(b, int):
+                return ["EqBus", a, b, 0.1]
+            if bbits and isinstance(a, int):
+                return ["EqBus", b, a, 0.1]
+        return [expr[0]] + [_rewrite(e) for e in expr[1:]]
+
+    for k, v in list(truthTableMap.items()):
+        if isinstance(v, list):
+            truthTableMap[k] = _rewrite(v)
 
 
 # main function to extract the sub-circuit of the design which is influenced by the reference signal bits
@@ -1281,5 +1298,8 @@ def subCircuitExtract(input_file_path, top_module_name, ref_module_name, ref_ins
 
     # expose all signals in the truth table to avoid pruning unreachable loops (e.g., LFSRs)
     signalNames = set(truthTableMap.keys()) | signalNames
+
+    # ensure Eq on buses is normalized to EqBus in non-unrolled case
+    normalize_eqbus(truthTableMap)
 
     return inputNames, inputWidths, signalNames, sigWidths, truthTableMap
