@@ -183,6 +183,13 @@ def main(input_file_path, top_module_name, ref_module_name, ref_instance_name,
     results = estimate_c_and_pbv_from_conditional_probs(
         s_hat_0, s_hat_1, s_hat, refSigBitNames, signalNames, target_signals=outputSigBitNames)
     # aggregate per base signal/ref (max over time slices)
+
+    top_150 = sorted(results.items(), key=lambda x: x[1]['Leakage'], reverse=True)[:150]
+
+    print("\nTop 150 signals with highest leakage: not aggregated")
+    for (sig, ref), metrics in top_150:
+        print(f"Signal: {sig}, Ref: {ref}, "f"Leakage: {metrics['Leakage']:.15f}, PBV: {metrics['PBV']:.15f}")
+
     aggregated = {}
     for (sig, ref), metrics in results.items():
         base_sig = sig.split("@")[0]
@@ -205,7 +212,8 @@ def main(input_file_path, top_module_name, ref_module_name, ref_instance_name,
     baseLeak = 1.0 / math.sqrt(ref_sig_width)
 
     # leakage score calculation
-    print("sigWidths ",sigWidths)
+    #print("sigWidths ",sigWidths)
+    '''
     for sig in tqdm(sigWidths, desc="Leakage calculation"):
         width = sigWidths[sig]
         leakages = []
@@ -233,7 +241,7 @@ def main(input_file_path, top_module_name, ref_module_name, ref_instance_name,
             # leakage score may exceed 1 due to approximation of above leakage formula
             if sigLeaks[sig] > 1:
                 sigLeaks[sig] = 1
-
+    '''
     print()
     endTime = time.time()
     #with open("leaks_file_path.txt", "w") as f:

@@ -414,7 +414,7 @@ def populateSigProbs_recon_dp(signalNames, s_hat, s_hat_0, s_hat_1,
             return False
         return False
 
-    def _expr_prob(expr, ref_name=None, ref_val=None):
+    def _expr_prob_uncached(expr, ref_name=None, ref_val=None):
         if isinstance(expr, int):
             return float(expr)
         if isinstance(expr, str):
@@ -489,6 +489,22 @@ def populateSigProbs_recon_dp(signalNames, s_hat, s_hat_0, s_hat_1,
                     return 1.0
             return gate_formula(op, _expr_prob(a, ref_name, ref_val), _expr_prob(b, ref_name, ref_val))
         return 0.5
+
+    def _freeze_expr(expr):
+        if isinstance(expr, list):
+            return tuple(_freeze_expr(e) for e in expr)
+        return expr
+
+    _expr_cache = {}
+
+    def _expr_prob(expr, ref_name=None, ref_val=None):
+        key = (_freeze_expr(expr), ref_name, ref_val)
+        if key in _expr_cache:
+            #print("key ",key)
+            return _expr_cache[key]
+        val = _expr_prob_uncached(expr, ref_name, ref_val)
+        _expr_cache[key] = val
+        return val
 
     def _direct_inputs(expr):
         if isinstance(expr, int):
@@ -566,7 +582,8 @@ def populateSigProbs_recon_dp(signalNames, s_hat, s_hat_0, s_hat_1,
                 anc_a = eff_ancestors.get(a, _direct_inputs(a)) if isinstance(a, str) else _direct_inputs(a)
                 anc_b = eff_ancestors.get(b, _direct_inputs(b)) if isinstance(b, str) else _direct_inputs(b)
                 shared = anc_a & anc_b
-                if shared and (recon_only_set is None or sig in recon_only_set):
+                if recon_only_set is not None:
+                #if shared and (recon_only_set is None or sig in recon_only_set):
                     print("exp: ", exp, " anc_a ", anc_a, " anc_b ", anc_b, " shared ", shared)
                     Z = sorted(shared)
                     s_hat[sig] = gate_prob_recon_dp(
