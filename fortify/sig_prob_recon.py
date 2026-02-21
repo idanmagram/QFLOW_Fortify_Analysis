@@ -454,7 +454,7 @@ def populateSigProbs_recon_dp(signalNames, s_hat, s_hat_0, s_hat_1,
                 floor = expr[3] if len(expr) > 3 else 0.0
                 if (not isinstance(a, int) and '[0:0]' not in a and _expr_input_reachable(a) ) or (
                       not  isinstance(b, int) and '[0:0]' not in b and _expr_input_reachable(b)):
-                    return 1.0
+                    return 1
                 abits = _bits_from_bus(a)
                 bbits = _bits_from_bus(b) if isinstance(b, str) else None
                 if abits is None:
@@ -486,7 +486,7 @@ def populateSigProbs_recon_dp(signalNames, s_hat, s_hat_0, s_hat_1,
             if op == "Eq" and (a in sigWidths and sigWidths[a] > 10):
                 if (isinstance(a, int) and _expr_input_reachable(b)) or (
                         isinstance(b, int) and _expr_input_reachable(a)):
-                    return 1.0
+                    return 1
             return gate_formula(op, _expr_prob(a, ref_name, ref_val), _expr_prob(b, ref_name, ref_val))
         return 0.5
 

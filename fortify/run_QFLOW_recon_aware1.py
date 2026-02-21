@@ -129,6 +129,9 @@ def main(input_file_path, top_module_name, ref_module_name, ref_instance_name,
     if reconvergence_aware:
         print("reconnnnnn")
         recon_only_set = None
+
+
+
         if subgraph_path:
             try:
                 with open(subgraph_path, "r") as f:
@@ -151,11 +154,7 @@ def main(input_file_path, top_module_name, ref_module_name, ref_instance_name,
                     truthTableMap, refSigBitNames, inputSigBitNames)
         done += 1
     print("finished calc")
-    #print("s_hat: ",s_hat)
-    #print("s_hat0: ",s_hat_0)
-    #print("s_hat1: ", s_hat_1)
 
-    # print("s_hat: ",s_hat)
     with open("s_hat.txt", "w") as f:
         print("s_hat", s_hat, file=f)
 
