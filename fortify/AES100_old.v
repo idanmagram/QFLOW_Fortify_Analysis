@@ -11,14 +11,14 @@ module top(clk, rst, state, key, out, Capacitance);
 
     // AES core (named ports)
 	
-	/*
+	
     aes_128 AES (
         .clk  (clk),
         .state(state),
         .key  (key),
         .out  (out)
     );
-	*/
+	
 	
 	
     // Trojan (optional)

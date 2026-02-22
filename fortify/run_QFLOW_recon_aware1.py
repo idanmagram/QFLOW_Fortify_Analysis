@@ -8,6 +8,7 @@ import sig_prob_recon
 from tqdm import tqdm
 import time
 from datetime import datetime
+from extract_sub_recon_graph import extract_sub_recon_graph, extract_leaky_outputs
 UNROLL_DEPTH = 32
 
 
@@ -84,8 +85,8 @@ def main(input_file_path, top_module_name, ref_module_name, ref_instance_name,
         refSigBitNames.append(f'{ref_sig_name}[{j}:{j}]')
     signalNames = set(signalNames_unrolled) | set(refSigBitNames)
 
-    with open("truthTableMap.txt", "w") as f:
-        print("truthTableMap 1", truthTableMap, file=f)
+    #with open("truthTableMap.txt", "w") as f:
+    #    print("truthTableMap 1", truthTableMap, file=f)
 
     # input signal bits names (time-indexed to match unrolled map)
     inputSigBitNames = []
@@ -95,79 +96,42 @@ def main(input_file_path, top_module_name, ref_module_name, ref_instance_name,
 
     prior = {name: 0.5 for name in inputSigBitNames}
 
-    s_hat = {}
-    s_hat_0 = {}
-    s_hat_1 = {}
+    def _init_prob_tables():
+        s_hat = {}
+        s_hat_0 = {}
+        s_hat_1 = {}
 
-    # initialise priors for input bits
-    for sig in inputSigBitNames:
-        base = sig.split("@")[0]
-        s_hat[sig] = prior.get(base, 0.5)
-        s_hat_0[sig] = {ref: 0.5 for ref in refSigBitNames}
-        s_hat_1[sig] = {ref: 0.5 for ref in refSigBitNames}
-        if "rst" in sig:
+        # initialise priors for input bits
+        for sig in inputSigBitNames:
+            base = sig.split("@")[0]
             s_hat[sig] = prior.get(base, 0.5)
             s_hat_0[sig] = {ref: 0.5 for ref in refSigBitNames}
             s_hat_1[sig] = {ref: 0.5 for ref in refSigBitNames}
-    # print("signalNames ",signalNames)
-    # initialise leakage scores of reference signal bits
-    for sig in signalNames:
-        if sig in refSigBitNames:
-            s_hat[sig] = 0.5
-            s_hat_0[sig] = {}
-            s_hat_1[sig] = {}
-            for ref in refSigBitNames:
-                s_hat_0[sig][ref] = 0.5
-                s_hat_1[sig][ref] = 0.5
-                if ref == sig:
-                    s_hat_0[sig][ref] = 0.0
-                    s_hat_1[sig][ref] = 1.0
+            if "rst" in sig:
+                s_hat[sig] = prior.get(base, 0.5)
+                s_hat_0[sig] = {ref: 0.5 for ref in refSigBitNames}
+                s_hat_1[sig] = {ref: 0.5 for ref in refSigBitNames}
+
+        # initialise leakage scores of reference signal bits
+        for sig in signalNames:
+            if sig in refSigBitNames:
+                s_hat[sig] = 0.5
+                s_hat_0[sig] = {}
+                s_hat_1[sig] = {}
+                for ref in refSigBitNames:
+                    s_hat_0[sig][ref] = 0.5
+                    s_hat_1[sig][ref] = 0.5
+                    if ref == sig:
+                        s_hat_0[sig][ref] = 0.0
+                        s_hat_1[sig][ref] = 1.0
+        return s_hat, s_hat_0, s_hat_1
+
+    s_hat, s_hat_0, s_hat_1 = _init_prob_tables()
 
 
     done = 0
 
-    if reconvergence_aware:
-        print("reconnnnnn")
-        recon_only_set = None
-
-
-
-        if subgraph_path:
-            try:
-                with open(subgraph_path, "r") as f:
-                    recon_only_set = {line.strip() for line in f if line.strip()}
-                print(f"Loaded reconvergence subgraph: {len(recon_only_set)} nodes")
-            except Exception as e:
-                print(f"Failed to read subgraph file {subgraph_path}: {e}")
-                recon_only_set = None
-        #print("recon_only_set ", recon_only_set)
-        sig_prob_recon.populateSigProbs_recon_dp(
-            signalNames, s_hat, s_hat_0, s_hat_1,
-            truthTableMap, refSigBitNames, inputSigBitNames, sigWidths,
-            recon_only_set=recon_only_set,
-        )
-    else:
-        for sig in tqdm(signalNames, desc="Signal Probability Calculation"):
-            if sig not in s_hat:
-                sig_prob.populateSigProbs(
-                    sig, set(), s_hat, s_hat_0, s_hat_1,
-                    truthTableMap, refSigBitNames, inputSigBitNames)
-        done += 1
-    print("finished calc")
-
-    with open("s_hat.txt", "w") as f:
-        print("s_hat", s_hat, file=f)
-
-    #with open("s_hat_0.txt", "w") as f:
-    #    print("s_hat_0", s_hat_0, file=f)
-
-    #with open("s_hat_1.txt", "w") as f:
-    #    print("s_hat_1", s_hat_1, file=f)
-
-        # print("s_hat0: ",s_hat_0)
-        # print("s_hat1: ", s_hat_1)
-
-        # build target signals: top-level outputs (out bits + Antena + others)
+    # build target signals: top-level outputs (out bits + Antena + others)
     outputSigBitNames = []
     if top_module_name in module_maps.moduleOutputPortListMap:
         outs = module_maps.moduleOutputPortListMap[top_module_name]
@@ -178,17 +142,99 @@ def main(input_file_path, top_module_name, ref_module_name, ref_instance_name,
                 for t in range(UNROLL_DEPTH + 1):
                     outputSigBitNames.append(f"{top_module_name}.{oname}[{i}:{i}]@{t}")
 
+    if reconvergence_aware:
+        print("reconnnnnn")
+        loaded_subgraph = None
+        if subgraph_path:
+            try:
+                with open(subgraph_path, "r") as f:
+                    loaded_subgraph = {line.strip() for line in f if line.strip()}
+                print(f"Loaded Reconvergence subgraph: {len(loaded_subgraph)} nodes")
+            except Exception as e:
+                print(f"Failed to read subgraph file {subgraph_path}: {e}")
+                loaded_subgraph = None
+
+        if loaded_subgraph is None:
+            print("Pass 1")
+            # Pass 1: full graph probabilities to identify leaky outputs.
+            sig_prob_recon.populateSigProbs_recon_dp(
+                signalNames, s_hat, s_hat_0, s_hat_1,
+                truthTableMap, refSigBitNames, inputSigBitNames, sigWidths
+            )
+            first_pass_results = estimate_c_and_pbv_from_conditional_probs(
+                s_hat_0, s_hat_1, s_hat, refSigBitNames, signalNames,
+                target_signals=outputSigBitNames)
+
+            leaky_outputs = extract_leaky_outputs(first_pass_results, leakage_threshold=1.0)
+            #leaky_outputs.add("top.Antena[0:0]@0")
+            recon_only_set = extract_sub_recon_graph(
+                truth_table_map=truthTableMap,
+                ref_sig_bit_names=refSigBitNames,
+                signal_names=signalNames,
+                results=first_pass_results,
+                leaky_outputs=leaky_outputs,
+                leakage_threshold=1.0,
+                unroll_depth=UNROLL_DEPTH,
+            )
+            print(f"First-pass leaky outputs: {len(leaky_outputs)}")
+            print(f"Extracted Reconvergence subgraph: {len(recon_only_set)} nodes")
+
+            results_dir = os.path.dirname(leaks_file_path)
+            leaky_outputs_path = os.path.join(results_dir, "leaky_outputs_auto.txt")
+            with open(leaky_outputs_path, "w") as f:
+                for s in sorted(leaky_outputs):
+                    f.write(f"{s}\n")
+            print(f"Saved first-pass leaky outputs to: {leaky_outputs_path}")
+        else:
+            recon_only_set = loaded_subgraph
+
+        # Optional artifact to reuse in future runs.
+        results_dir = os.path.dirname(leaks_file_path)
+        auto_subgraph_path = os.path.join(results_dir, "recon_subgraph_auto.txt")
+        with open(auto_subgraph_path, "w") as f:
+            for s in sorted(recon_only_set):
+                f.write(f"{s}\n")
+        print(f"Saved Reconvergence subgraph to: {auto_subgraph_path}")
+
+        # Pass 2: recompute with reconvergence handling restricted to subgraph.
+        s_hat, s_hat_0, s_hat_1 = _init_prob_tables()
+        sig_prob_recon.populateSigProbs_recon_dp(
+            signalNames, s_hat, s_hat_0, s_hat_1,
+            truthTableMap, refSigBitNames, inputSigBitNames, sigWidths,
+            recon_only_set=recon_only_set
+        )
+    else:
+        for sig in tqdm(signalNames, desc="Signal Probability Calculation"):
+            if sig not in s_hat:
+                sig_prob_recon.populateSigProbs_recon_dp(
+                    signalNames, s_hat, s_hat_0, s_hat_1,
+                    truthTableMap, refSigBitNames, inputSigBitNames, sigWidths)
+            done += 1
+    print("finished calc")
+
+    #with open("s_hat.txt", "w") as f:
+    #    print("s_hat", s_hat, file=f)
+
+    #with open("s_hat_0.txt", "w") as f:
+    #    print("s_hat_0", s_hat_0, file=f)
+
+    #with open("s_hat_1.txt", "w") as f:
+    #    print("s_hat_1", s_hat_1, file=f)
+
+        # print("s_hat0: ",s_hat_0)
+        # print("s_hat1: ", s_hat_1)
+
     #print("outputSigBitNames ", outputSigBitNames)
     results = estimate_c_and_pbv_from_conditional_probs(
         s_hat_0, s_hat_1, s_hat, refSigBitNames, signalNames, target_signals=outputSigBitNames)
     # aggregate per base signal/ref (max over time slices)
-
+    '''
     top_150 = sorted(results.items(), key=lambda x: x[1]['Leakage'], reverse=True)[:150]
 
     print("\nTop 150 signals with highest leakage: not aggregated")
     for (sig, ref), metrics in top_150:
         print(f"Signal: {sig}, Ref: {ref}, "f"Leakage: {metrics['Leakage']:.15f}, PBV: {metrics['PBV']:.15f}")
-
+    '''
     aggregated = {}
     for (sig, ref), metrics in results.items():
         base_sig = sig.split("@")[0]
@@ -203,54 +249,12 @@ def main(input_file_path, top_module_name, ref_module_name, ref_instance_name,
     for (sig, ref), metrics in top_150:
         print(f"Signal: {sig}, Ref: {ref}, "f"Leakage: {metrics['Leakage']:.15f}, PBV: {metrics['PBV']:.15f}")
 
-    sigLeaks = {}
-    sigLeaks_ext = {}
-
-    print()
-    import math
-    baseLeak = 1.0 / math.sqrt(ref_sig_width)
-
-    # leakage score calculation
-    #print("sigWidths ",sigWidths)
-    '''
-    for sig in tqdm(sigWidths, desc="Leakage calculation"):
-        width = sigWidths[sig]
-        leakages = []
-        flag = 1
-        for j in range(width):
-            sigName = '{}[{}:{}]'.format(sig, j, j)
-            if sigName in signalNames:
-                leakVal = 0
-                for ref in refSigBitNames:
-                    leak = (s_hat_0[sigName][ref] - s_hat_1[sigName][ref]) ** 2
-                    if leak > 0:
-                        y_bar = 2 * s_hat[sigName] * (1 - s_hat[sigName])
-                        denom = 4 * y_bar * (1 - y_bar)
-                        if denom != 0:
-                            leak = leak / math.sqrt(denom)
-                    leakVal += leak
-                leakages.append(leakVal ** 2)
-                sigLeaks_ext[sigName] = leakVal
-
-            else:
-                flag = 0
-                break
-        if flag:
-            sigLeaks[sig] = math.sqrt(sum(leakages)) * baseLeak
-            # leakage score may exceed 1 due to approximation of above leakage formula
-            if sigLeaks[sig] > 1:
-                sigLeaks[sig] = 1
-    '''
     print()
     endTime = time.time()
-    #with open("leaks_file_path.txt", "w") as f:
-    #    print(sigLeaks, file=f)
-
-    print("Number of signals: {}".format(len(sigLeaks)))
     print("Total time taken: {:.4f}s".format(endTime - startTime))
-
     print("\nCompleted!")
     print("******************************************************************\n")
+    return
 
 
 if __name__ == '__main__':

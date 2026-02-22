@@ -314,15 +314,9 @@ def populateSigProbs_recon_dp(signalNames, s_hat, s_hat_0, s_hat_1,
     universe = set(signalNames) | set(truthTableMap.keys())
     for exp in truthTableMap.values():
         universe |= _extract_signal_names(exp)
-    #print("universe", universe)
-    #return
-    # 'top.TSC.beep1[0:0]' in universe
-    # top.TSC.Baud8GeneratorACC[23:23] is in ? yes
     parents = {s: set() for s in universe}
     children = {s: set() for s in universe}
     for s in universe:
-        #if 'Baud8GeneratorACC' in s:
-        #    print("RAFA")
         exp = truthTableMap.get(s, None)
         if exp is not None:
             if isinstance(exp, str) and isinstance(s, str) and s.endswith("@0") and exp == s[:-2]:
@@ -336,25 +330,25 @@ def populateSigProbs_recon_dp(signalNames, s_hat, s_hat_0, s_hat_1,
     indeg = {s: len(parents.get(s, set())) for s in universe}
     #print("indeg ",indeg)
     #return
-    with open("parents.txt", "a") as f:
-        f.write(f"parents {parents}\n")
-    with open("children.txt", "a") as f:
-        f.write(f"children {children}\n")
-    print("write files")
 
-    #print("parents ",parents)
-    #print("children ",children)
+    #with open("parents.txt", "a") as f:
+    #    f.write(f"parents {parents}\n")
+    #with open("children.txt", "a") as f:
+    #    f.write(f"children {children}\n")
+    #print("write files")
 
     q = [s for s, d in indeg.items() if d == 0]
     #print("q is ",q)
     #return
     order = []
+    #print("q is {}".format(q))
     while q:
         n = q.pop()
         order.append(n)
         for ch in children.get(n, set()):
             indeg[ch] -= 1
             if indeg[ch] == 0:
+                #print("ch ",ch)
                 q.append(ch)
     print("finished topo order")
     #print("order: ", order)
@@ -522,8 +516,8 @@ def populateSigProbs_recon_dp(signalNames, s_hat, s_hat_0, s_hat_1,
     #return
     for sig in order:
         #print("-----sig-----: ",sig)
-        if sig == 'top.U_RSA.cypher[0:0]@1':
-            print("idan!!!!!! ",truthTableMap[sig])
+        #if sig == 'top.TSC.SHIFTReg[0:0]@0':
+        #    print("idan!!!!!! ",truthTableMap[sig])
         if sig in s_hat:
             if sig not in eff_ancestors:
                 eff_ancestors[sig] = {sig}
@@ -576,14 +570,17 @@ def populateSigProbs_recon_dp(signalNames, s_hat, s_hat_0, s_hat_1,
                         s_hat_0[sig] = {ref: 1.0 for ref in refSigBitNames}
                         s_hat_1[sig] = {ref: 1.0 for ref in refSigBitNames}
                         eff_ancestors[sig] = {sig}
+                        eff_ancestors[sig] = {sig}
                         atomic_set.add(sig)
                         continue
 
+                #if recon_only_set is not None:
+                #if recon_only_set is not None and shared and (sig in recon_only_set):
                 anc_a = eff_ancestors.get(a, _direct_inputs(a)) if isinstance(a, str) else _direct_inputs(a)
                 anc_b = eff_ancestors.get(b, _direct_inputs(b)) if isinstance(b, str) else _direct_inputs(b)
                 shared = anc_a & anc_b
-                if recon_only_set is not None:
-                #if shared and (recon_only_set is None or sig in recon_only_set):
+                if (recon_only_set is not None) and (sig in recon_only_set) and shared:
+                #if shared:
                     print("exp: ", exp, " anc_a ", anc_a, " anc_b ", anc_b, " shared ", shared)
                     Z = sorted(shared)
                     s_hat[sig] = gate_prob_recon_dp(
@@ -591,7 +588,6 @@ def populateSigProbs_recon_dp(signalNames, s_hat, s_hat_0, s_hat_1,
                         atomic_set, s_hat, s_hat_0, s_hat_1, ref_name=None
                     )
 
-                    print("finish s_hat")
                     s_hat_0[sig] = {}
                     s_hat_1[sig] = {}
                     for ref in refSigBitNames:
@@ -609,7 +605,6 @@ def populateSigProbs_recon_dp(signalNames, s_hat, s_hat_0, s_hat_1,
                     #print("2eff_ancestors[sig] = ", eff_ancestors[sig], " of sig ", sig)
 
                     atomic_set.add(sig)
-                    #print("idan")
                 else:
                     s_hat[sig] = incSigProb(_expr_prob(a), _expr_prob(b), op)
                     s_hat_0[sig] = {ref: incSigProb(_expr_prob(a, ref, 0),
@@ -634,7 +629,6 @@ def populateSigProbs_recon_dp(signalNames, s_hat, s_hat_0, s_hat_1,
                 s_hat[sig] = _expr_prob(exp)
                 s_hat_0[sig] = {ref: _expr_prob(exp, ref, 0) for ref in refSigBitNames}
                 s_hat_1[sig] = {ref: _expr_prob(exp, ref, 1) for ref in refSigBitNames}
-                # propagate upstream ancestors through NOT
                 eff_ancestors[sig] = c_anc
                 #print("4eff_ancestors[sig] = ", eff_ancestors[sig]," of sig ",sig)
 
