@@ -9,6 +9,7 @@ from tqdm import tqdm
 import time
 from datetime import datetime
 from extract_sub_recon_graph import extract_sub_recon_graph, extract_leaky_outputs
+from recon_graph_artifacts import build_recon_graph_artifacts
 UNROLL_DEPTH = 32
 
 
@@ -85,8 +86,8 @@ def main(input_file_path, top_module_name, ref_module_name, ref_instance_name,
         refSigBitNames.append(f'{ref_sig_name}[{j}:{j}]')
     signalNames = set(signalNames_unrolled) | set(refSigBitNames)
 
-    #with open("truthTableMap.txt", "w") as f:
-    #    print("truthTableMap 1", truthTableMap, file=f)
+    with open("truthTableMap.txt", "w") as f:
+        print("truthTableMap 1", truthTableMap, file=f)
 
     # input signal bits names (time-indexed to match unrolled map)
     inputSigBitNames = []
@@ -95,6 +96,35 @@ def main(input_file_path, top_module_name, ref_module_name, ref_instance_name,
             inputSigBitNames.extend([f'{inp}[{i}:{i}]@{t}' for i in range(wid)])
 
     prior = {name: 0.5 for name in inputSigBitNames}
+    graph_artifacts = build_recon_graph_artifacts(signalNames, truthTableMap)
+
+    def _init_prob_tables_second_pass(s_hat, s_hat_0, s_hat_1):
+
+        # initialise priors for input bits
+        for sig in inputSigBitNames:
+            base = sig.split("@")[0]
+            s_hat[sig] = prior.get(base, 0.5)
+            s_hat_0[sig] = {ref: 0.5 for ref in refSigBitNames}
+            s_hat_1[sig] = {ref: 0.5 for ref in refSigBitNames}
+            if "rst" in sig:
+                s_hat[sig] = prior.get(base, 0.5)
+                s_hat_0[sig] = {ref: 0.5 for ref in refSigBitNames}
+                s_hat_1[sig] = {ref: 0.5 for ref in refSigBitNames}
+
+        # initialise leakage scores of reference signal bits
+        for sig in signalNames:
+            if sig in refSigBitNames:
+                s_hat[sig] = 0.5
+                s_hat_0[sig] = {}
+                s_hat_1[sig] = {}
+                for ref in refSigBitNames:
+                    s_hat_0[sig][ref] = 0.5
+                    s_hat_1[sig][ref] = 0.5
+                    if ref == sig:
+                        s_hat_0[sig][ref] = 0.0
+                        s_hat_1[sig][ref] = 1.0
+        return s_hat, s_hat_0, s_hat_1
+
 
     def _init_prob_tables():
         s_hat = {}
@@ -159,7 +189,8 @@ def main(input_file_path, top_module_name, ref_module_name, ref_instance_name,
             # Pass 1: full graph probabilities to identify leaky outputs.
             sig_prob_recon.populateSigProbs_recon_dp(
                 signalNames, s_hat, s_hat_0, s_hat_1,
-                truthTableMap, refSigBitNames, inputSigBitNames, sigWidths
+                truthTableMap, refSigBitNames, inputSigBitNames, sigWidths,
+                graph_artifacts=graph_artifacts
             )
             first_pass_results = estimate_c_and_pbv_from_conditional_probs(
                 s_hat_0, s_hat_1, s_hat, refSigBitNames, signalNames,
@@ -196,19 +227,25 @@ def main(input_file_path, top_module_name, ref_module_name, ref_instance_name,
                 f.write(f"{s}\n")
         print(f"Saved Reconvergence subgraph to: {auto_subgraph_path}")
 
-        # Pass 2: recompute with reconvergence handling restricted to subgraph.
-        s_hat, s_hat_0, s_hat_1 = _init_prob_tables()
+        # Pass 2: recompute only the recon subgraph and keep Pass-1 values outside it.
+        # This avoids recalculating unaffected nodes.
+        for sig in recon_only_set:
+            s_hat.pop(sig, None)
+            s_hat_0.pop(sig, None)
+            s_hat_1.pop(sig, None)
+        _init_prob_tables_second_pass(s_hat, s_hat_0, s_hat_1)
         sig_prob_recon.populateSigProbs_recon_dp(
             signalNames, s_hat, s_hat_0, s_hat_1,
             truthTableMap, refSigBitNames, inputSigBitNames, sigWidths,
-            recon_only_set=recon_only_set
+            recon_only_set=recon_only_set, graph_artifacts=graph_artifacts
         )
     else:
         for sig in tqdm(signalNames, desc="Signal Probability Calculation"):
             if sig not in s_hat:
                 sig_prob_recon.populateSigProbs_recon_dp(
                     signalNames, s_hat, s_hat_0, s_hat_1,
-                    truthTableMap, refSigBitNames, inputSigBitNames, sigWidths)
+                    truthTableMap, refSigBitNames, inputSigBitNames, sigWidths,
+                    graph_artifacts=graph_artifacts)
             done += 1
     print("finished calc")
 

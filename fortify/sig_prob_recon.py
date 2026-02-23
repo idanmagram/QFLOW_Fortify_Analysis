@@ -1,6 +1,7 @@
 # sig_prob_recon.py
 import sys
 from itertools import product
+from recon_graph_artifacts import build_recon_graph_artifacts
 
 sys.setrecursionlimit(100000)
 
@@ -310,46 +311,12 @@ def gate_prob_recon_dp(op, a, b, Z, truthTableMap, clamps, atomic_set,
 
 def populateSigProbs_recon_dp(signalNames, s_hat, s_hat_0, s_hat_1,
                               truthTableMap, refSigBitNames, inputSigBitNames, sigWidths,
-                              recon_only_set=None):
-    universe = set(signalNames) | set(truthTableMap.keys())
-    for exp in truthTableMap.values():
-        universe |= _extract_signal_names(exp)
-    parents = {s: set() for s in universe}
-    children = {s: set() for s in universe}
-    for s in universe:
-        exp = truthTableMap.get(s, None)
-        if exp is not None:
-            if isinstance(exp, str) and isinstance(s, str) and s.endswith("@0") and exp == s[:-2]:
-                # Treat @0 aliases as pure aliases (no dependency edge).
-                continue
-            ps = _extract_signal_names(exp, self_name=s)
-            parents[s] = ps
-            for p in ps:
-                children.setdefault(p, set()).add(s)
-
-    indeg = {s: len(parents.get(s, set())) for s in universe}
-    #print("indeg ",indeg)
-    #return
-
-    #with open("parents.txt", "a") as f:
-    #    f.write(f"parents {parents}\n")
-    #with open("children.txt", "a") as f:
-    #    f.write(f"children {children}\n")
-    #print("write files")
-
-    q = [s for s, d in indeg.items() if d == 0]
-    #print("q is ",q)
-    #return
-    order = []
-    #print("q is {}".format(q))
-    while q:
-        n = q.pop()
-        order.append(n)
-        for ch in children.get(n, set()):
-            indeg[ch] -= 1
-            if indeg[ch] == 0:
-                #print("ch ",ch)
-                q.append(ch)
+                              recon_only_set=None, graph_artifacts=None):
+    if graph_artifacts is None:
+        graph_artifacts = build_recon_graph_artifacts(signalNames, truthTableMap)
+    universe = graph_artifacts["universe"]
+    parents = graph_artifacts["parents"]
+    order = graph_artifacts["order"]
     print("finished topo order")
     #print("order: ", order)
     #return
@@ -516,8 +483,8 @@ def populateSigProbs_recon_dp(signalNames, s_hat, s_hat_0, s_hat_1,
     #return
     for sig in order:
         #print("-----sig-----: ",sig)
-        #if sig == 'top.TSC.SHIFTReg[0:0]@0':
-        #    print("idan!!!!!! ",truthTableMap[sig])
+        if sig == 'top.tro.load[0:0]@2' and recon_only_set != None:
+            print("idan!!!!!! ",truthTableMap[sig])
         if sig in s_hat:
             if sig not in eff_ancestors:
                 eff_ancestors[sig] = {sig}
