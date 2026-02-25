@@ -23,6 +23,7 @@ def estimate_c_and_pbv_from_conditional_probs(s_hat_0, s_hat_1, s_hat,
     joint_J   = defaultdict(lambda: defaultdict(float))  # J[y][h]
     results   = {}
     signals_to_check = target_signals if target_signals is not None else signalNames
+    #print("signalNames", signalNames)
 
     for sig in signals_to_check:
         if not isinstance(sig, str):
@@ -91,11 +92,10 @@ def main(input_file_path, top_module_name, ref_module_name, ref_instance_name,
 
     # input signal bits names (time-indexed to match unrolled map)
     inputSigBitNames = []
-    for inp, wid in zip(inputNames, inputWidths):
-        for t in range(UNROLL_DEPTH + 1):
-            inputSigBitNames.extend([f'{inp}[{i}:{i}]@{t}' for i in range(wid)])
 
-    prior = {name: 0.5 for name in inputSigBitNames}
+    for inp, wid in zip(inputNames, inputWidths):
+        inputSigBitNames.extend([f'{inp}[{i}:{i}]' for i in range(wid)])
+
     graph_artifacts = build_recon_graph_artifacts(signalNames, truthTableMap)
 
     def _init_prob_tables_second_pass(s_hat, s_hat_0, s_hat_1):
@@ -103,13 +103,13 @@ def main(input_file_path, top_module_name, ref_module_name, ref_instance_name,
         # initialise priors for input bits
         for sig in inputSigBitNames:
             base = sig.split("@")[0]
-            s_hat[sig] = prior.get(base, 0.5)
+            s_hat[sig] = 0.5
             s_hat_0[sig] = {ref: 0.5 for ref in refSigBitNames}
             s_hat_1[sig] = {ref: 0.5 for ref in refSigBitNames}
             if "rst" in sig:
-                s_hat[sig] = prior.get(base, 0.5)
-                s_hat_0[sig] = {ref: 0.5 for ref in refSigBitNames}
-                s_hat_1[sig] = {ref: 0.5 for ref in refSigBitNames}
+                s_hat[sig] = 0.1
+                s_hat_0[sig] = {ref: 0.1 for ref in refSigBitNames}
+                s_hat_1[sig] = {ref: 0.1 for ref in refSigBitNames}
 
         # initialise leakage scores of reference signal bits
         for sig in signalNames:
@@ -134,13 +134,13 @@ def main(input_file_path, top_module_name, ref_module_name, ref_instance_name,
         # initialise priors for input bits
         for sig in inputSigBitNames:
             base = sig.split("@")[0]
-            s_hat[sig] = prior.get(base, 0.5)
+            s_hat[sig] = 0.5
             s_hat_0[sig] = {ref: 0.5 for ref in refSigBitNames}
             s_hat_1[sig] = {ref: 0.5 for ref in refSigBitNames}
             if "rst" in sig:
-                s_hat[sig] = prior.get(base, 0.5)
-                s_hat_0[sig] = {ref: 0.5 for ref in refSigBitNames}
-                s_hat_1[sig] = {ref: 0.5 for ref in refSigBitNames}
+                s_hat[sig] = 0.1
+                s_hat_0[sig] = {ref: 0.1 for ref in refSigBitNames}
+                s_hat_1[sig] = {ref: 0.1 for ref in refSigBitNames}
 
         # initialise leakage scores of reference signal bits
         for sig in signalNames:
@@ -173,7 +173,7 @@ def main(input_file_path, top_module_name, ref_module_name, ref_instance_name,
                     outputSigBitNames.append(f"{top_module_name}.{oname}[{i}:{i}]@{t}")
 
     if reconvergence_aware:
-        print("reconnnnnn")
+        print("Reconvergance aware calculation")
         loaded_subgraph = None
         if subgraph_path:
             try:
@@ -229,6 +229,7 @@ def main(input_file_path, top_module_name, ref_module_name, ref_instance_name,
 
         # Pass 2: recompute only the recon subgraph and keep Pass-1 values outside it.
         # This avoids recalculating unaffected nodes.
+        print("Pass 2")
         for sig in recon_only_set:
             s_hat.pop(sig, None)
             s_hat_0.pop(sig, None)
@@ -249,8 +250,8 @@ def main(input_file_path, top_module_name, ref_module_name, ref_instance_name,
             done += 1
     print("finished calc")
 
-    #with open("s_hat.txt", "w") as f:
-    #    print("s_hat", s_hat, file=f)
+    with open("s_hat.txt", "w") as f:
+        print("s_hat", s_hat, file=f)
 
     #with open("s_hat_0.txt", "w") as f:
     #    print("s_hat_0", s_hat_0, file=f)

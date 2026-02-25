@@ -483,7 +483,7 @@ def populateSigProbs_recon_dp(signalNames, s_hat, s_hat_0, s_hat_1,
     #return
     for sig in order:
         #print("-----sig-----: ",sig)
-        if sig == 'top.tro.load[0:0]@2' and recon_only_set != None:
+        if sig == 'top.Tj_Trigger.Tj_Trig[0:0]@9' and recon_only_set != None:
             print("idan!!!!!! ",truthTableMap[sig])
         if sig in s_hat:
             if sig not in eff_ancestors:

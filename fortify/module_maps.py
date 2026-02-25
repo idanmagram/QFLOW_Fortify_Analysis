@@ -665,6 +665,7 @@ def populateModuleExprMap(module_name, instance_name):
                                 fName = getSigName(rhsAst.false_value, instance_name)
                                 print("fName = {}".format(fName))
                                 width = high - low + 1
+                                print("width = {}".format(width))
 
                                 def _bit_at(expr_name, idx):
                                     if isinstance(expr_name, int):
@@ -749,9 +750,18 @@ def populateModuleExprMap(module_name, instance_name):
                                                 except Exception:
                                                     return name
 
-                                            lbit = bit_from_name(left, idx)
-                                            rbit = bit_from_name(right, idx)
-                                            return ['Xor', lbit, rbit]
+                                            # Heuristic for probability preservation:
+                                            # treat Plus as pass-through of one addend's bit (prefer self bus).
+                                            def _same_bus(name):
+                                                return isinstance(name, str) and name.rsplit('[', 1)[0] == lnameonly
+
+                                            if _same_bus(left):
+                                                chosen = left
+                                            elif _same_bus(right):
+                                                chosen = right
+                                            else:
+                                                chosen = left
+                                            return bit_from_name(chosen, idx)
                                         return expr_name
                                     try:
                                         base = expr_name.rsplit('[', 1)[0]
@@ -856,6 +866,7 @@ def populateModuleExprMap(module_name, instance_name):
                                                 lnameonly):
                                             shift_delta, wrap = _normalize_shift(ref_idx, i)
                                             if shift_delta != 0:
+                                                print("hi shift",shift_delta, " data_expr", data_expr, " depth_limit", depth_limit)
                                                 chain_expr = _build_shift_chain(i, shift_delta, depth_limit, wrap,
                                                                                 data_expr)
                                                 truthTableMap['{}[{}:{}]'.format(lnameonly, i, i)] = chain_expr
@@ -883,23 +894,38 @@ def populateModuleExprMap(module_name, instance_name):
                                     else:
                                         truthTableMap['{}[{}:{}]'.format(lnameonly, i, i)] = 0
                             elif isinstance(rhsAst, vast.Plus):
-                                # bitwise approximate sum without carry: sum_i = a_i XOR b_i
+                                # Heuristic for probability preservation:
+                                # treat Plus as pass-through of one addend (prefer self bus).
                                 def _bits(expr):
                                     try:
                                         return getRnamesExpr(expr, low, high)
                                     except Exception:
                                         return None
 
-                                if isinstance(rname, list) and len(rname) >= 3:
-                                    a_bits = _bits(rname[1])
-                                    b_bits = _bits(rname[2])
+                                left_name = getSigName(rhsAst.left, instance_name)
+                                right_name = getSigName(rhsAst.right, instance_name)
+                                left_bits = _bits(left_name) if not isinstance(left_name, int) else None
+                                right_bits = _bits(right_name) if not isinstance(right_name, int) else None
+
+                                def _bit(name, bits, i):
+                                    if isinstance(name, int):
+                                        return (name >> (i - low)) & 1
+                                    if bits and len(bits) > 1:
+                                        return bits[1][i - low]
+                                    return 0
+
+                                def _same_bus(name):
+                                    return isinstance(name, str) and name.rsplit('[', 1)[0] == lnameonly
+
+                                if _same_bus(left_name):
+                                    chosen_name, chosen_bits = left_name, left_bits
+                                elif _same_bus(right_name):
+                                    chosen_name, chosen_bits = right_name, right_bits
                                 else:
-                                    a_bits = _bits(rname)
-                                    b_bits = None
+                                    chosen_name, chosen_bits = left_name, left_bits
+
                                 for i in range(low, high + 1):
-                                    abit = a_bits[1][i - low] if a_bits and len(a_bits) > 1 else 0
-                                    bbit = b_bits[1][i - low] if b_bits and len(b_bits) > 1 else 0
-                                    truthTableMap['{}[{}:{}]'.format(lnameonly, i, i)] = ['Xor', abit, bbit]
+                                    truthTableMap['{}[{}:{}]'.format(lnameonly, i, i)] = _bit(chosen_name, chosen_bits, i)
                             else:
                                 # Check if rname is a list (concatenation or operation result)
                                 if isinstance(rname, list):
@@ -1030,7 +1056,9 @@ def getInternalSignalNames(module_name, instance_name):
                 signalNames.add(signalName)
 
 
-# Build a time-unrolled truth table map for looped signals only, depth H (LHS at t+1 from RHS at t).
+# Build a time-unrolled truth table map.
+# Only true loop bases are unrolled by width; dependents inherit width from
+# loop base(s) they transitively depend on. H is used only as fallback.
 def build_time_unrolled_truth_table(truthTableMap, H=0):
     def _base(sig):
         if not isinstance(sig, str):
@@ -1056,7 +1084,9 @@ def build_time_unrolled_truth_table(truthTableMap, H=0):
             if sb.split('.')[-1] == leaf: return True
         return False
 
-    loop_keys = {k for k in truthTableMap.keys() if _base(k) in loop_bases or _is_seq_base(_base(k))}
+    # Only self-referential loop bases should drive temporal unrolling.
+    loop_root_bases = set(loop_bases)
+    loop_keys = {k for k in truthTableMap.keys() if _base(k) in loop_root_bases}
 
     # DEBUG to file
     try:
@@ -1105,18 +1135,60 @@ def build_time_unrolled_truth_table(truthTableMap, H=0):
             continue
         base_deps.setdefault(bk, set()).update(_expr_bases(v))
 
+    # Track which loop roots each base depends on transitively.
+    roots_by_base = {bk: set() for bk in base_deps.keys()}
+    for rb in loop_root_bases:
+        roots_by_base.setdefault(rb, set()).add(rb)
+
     changed = True
-    reach = set(loop_bases | seq_bases)
     while changed:
         changed = False
         for bk, deps in base_deps.items():
-            if bk in reach:
-                continue
-            if deps & reach:
-                reach.add(bk)
+            roots = roots_by_base.setdefault(bk, set())
+            new_roots = set()
+            for dep in deps:
+                new_roots |= roots_by_base.get(dep, set())
+            if not new_roots.issubset(roots):
+                roots |= new_roots
                 changed = True
 
-    dep_keys = {k for k in truthTableMap.keys() if _base(k) in reach and _base(k) not in loop_bases}
+    reach = {bk for bk, roots in roots_by_base.items() if roots} | set(loop_root_bases)
+    dep_keys = {k for k in truthTableMap.keys() if _base(k) in reach and _base(k) not in loop_root_bases}
+
+    def _infer_width_from_keys(base_name):
+        lo = None
+        hi = None
+        prefix = f"{base_name}["
+        for k in truthTableMap.keys():
+            if not isinstance(k, str) or not k.startswith(prefix):
+                continue
+            try:
+                idx = int(k.split("[", 1)[1].split(":", 1)[0])
+            except Exception:
+                continue
+            lo = idx if lo is None else min(lo, idx)
+            hi = idx if hi is None else max(hi, idx)
+        if lo is None or hi is None:
+            return None
+        return hi - lo + 1
+
+    def _width_for_base(base_name):
+        w = sigWidths.get(base_name, None)
+        if isinstance(w, int) and w > 0:
+            return w
+        inferred = _infer_width_from_keys(base_name)
+        if isinstance(inferred, int) and inferred > 0:
+            return inferred
+        return H if isinstance(H, int) and H > 0 else 1
+
+    root_width = {rb: _width_for_base(rb) for rb in loop_root_bases}
+    base_unroll_depth = {}
+    for bk in reach:
+        roots = roots_by_base.get(bk, set())
+        if roots:
+            base_unroll_depth[bk] = max(root_width.get(r, _width_for_base(r)) for r in roots)
+        else:
+            base_unroll_depth[bk] = _width_for_base(bk)
 
     def _rewrite(expr, t):
         if isinstance(expr, int):
@@ -1173,15 +1245,17 @@ def build_time_unrolled_truth_table(truthTableMap, H=0):
 
     for key, expr in truthTableMap.items():
         base = _base(key)
-        if (base in loop_bases or base in seq_bases) and key in loop_keys:
-            for t in range(H):
+        if base in loop_root_bases and key in loop_keys:
+            local_h = base_unroll_depth.get(base, _width_for_base(base))
+            for t in range(local_h):
                 lhs = f"{key}@{t + 1}"
                 rhs = _rewrite(expr, t)
                 rhs = _expand_eq(rhs)
                 unrolled[lhs] = _simplify(rhs)
                 sigs.add(lhs)
         elif key in dep_keys:
-            for t in range(H + 1):
+            local_h = base_unroll_depth.get(base, _width_for_base(base))
+            for t in range(local_h + 1):
                 lhs = f"{key}@{t}"
                 rhs = _rewrite(expr, t)
                 rhs = _expand_eq(rhs)
