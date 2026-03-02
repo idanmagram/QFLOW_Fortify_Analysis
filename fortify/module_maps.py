@@ -41,6 +41,77 @@ moduleWireExprMap = {}
 moduleWireWidthMap = {}
 # bases assigned via sequential (nonblocking) statements
 seqBases = set()
+LARGE_CONST_LUT_MIN_CASES = 11
+
+
+def simplify_large_const_lut_cond(expr, min_cases=LARGE_CONST_LUT_MIN_CASES):
+    """Collapse very large constant-LUT Cond chains into a compact heuristic."""
+    def _selector_lsb(bus_name):
+        if not isinstance(bus_name, str):
+            return None
+        if "[" in bus_name and "]" in bus_name:
+            base = bus_name.split("[", 1)[0]
+            rng = bus_name.split("[", 1)[1].split("]", 1)[0]
+            if ":" in rng:
+                try:
+                    _, lsb = map(int, rng.split(":", 1))
+                    return f"{base}[{lsb}:{lsb}]"
+                except Exception:
+                    return None
+            try:
+                idx = int(rng)
+                return f"{base}[{idx}:{idx}]"
+            except Exception:
+                return None
+        return f"{bus_name}[0:0]"
+
+    def _is_bit_const(v):
+        return isinstance(v, int) and v in (0, 1)
+
+    cases = []
+    sel_bus = None
+    cur = expr
+
+    while isinstance(cur, list) and len(cur) == 4 and cur[0] == "Cond":
+        cond, tval, fval = cur[1], cur[2], cur[3]
+        if not (isinstance(cond, list) and len(cond) >= 3 and cond[0] in ("EqBus", "Eq")):
+            return expr
+        if cond[0] == "EqBus":
+            bus = cond[1]
+            key = cond[2]
+            if not isinstance(bus, str) or not isinstance(key, int):
+                return expr
+        else:
+            # Eq can appear before normalize_eqbus(); accept bus==const patterns.
+            a = cond[1] if len(cond) > 1 else None
+            b = cond[2] if len(cond) > 2 else None
+            if isinstance(a, str) and isinstance(b, int):
+                bus, key = a, b
+            elif isinstance(b, str) and isinstance(a, int):
+                bus, key = b, a
+            else:
+                return expr
+        if sel_bus is None:
+            sel_bus = bus
+        elif sel_bus != bus:
+            return expr
+        if not _is_bit_const(tval):
+            return expr
+        cases.append(tval)
+        cur = fval
+
+    if not _is_bit_const(cur):
+        return expr
+    cases.append(cur)
+
+    if len(cases) < min_cases:
+        return expr
+
+    selector = _selector_lsb(sel_bus)
+    if selector is not None:
+        return selector
+    return ["Mix", 0, 1]
+
 
 
 # parses the input Verilog file (along with standard module definitions)
@@ -635,7 +706,7 @@ def populateModuleExprMap(module_name, instance_name):
                                     truthTableMap['{}[{}:{}]'.format(lnameonly, i, i)] = ['Xor', abit, bbit]
 
                         elif (lbits[0] == lbits[1]):
-                            truthTableMap[lname] = rname
+                            truthTableMap[lname] = simplify_large_const_lut_cond(rname) if isinstance(rname, list) else rname
 
                         else:
 
@@ -663,9 +734,9 @@ def populateModuleExprMap(module_name, instance_name):
                                 condName = getSigName(rhsAst.cond, instance_name)
                                 tName = getSigName(rhsAst.true_value, instance_name)
                                 fName = getSigName(rhsAst.false_value, instance_name)
-                                print("fName = {}".format(fName))
+                                #print("fName = {}".format(fName))
                                 width = high - low + 1
-                                print("width = {}".format(width))
+                                #print("width = {}".format(width))
 
                                 def _bit_at(expr_name, idx):
                                     if isinstance(expr_name, int):
@@ -781,7 +852,7 @@ def populateModuleExprMap(module_name, instance_name):
                                         inner_cond = fbit[1]
                                         if inner_cond == ['Not', condName] and fbit[3] == 0:
                                             fbit = fbit[2]
-                                    bit_exprs[i] = ['Cond', condName, tbit, fbit]
+                                    bit_exprs[i] = simplify_large_const_lut_cond(['Cond', condName, tbit, fbit])
 
                                 def _parse_self_ref(expr):
                                     """Return bit index if expr is a self-reference to lnameonly[idx:idx]."""
@@ -1088,33 +1159,6 @@ def build_time_unrolled_truth_table(truthTableMap, H=0):
     loop_root_bases = set(loop_bases)
     loop_keys = {k for k in truthTableMap.keys() if _base(k) in loop_root_bases}
 
-    # DEBUG to file
-    try:
-        with open("debug_dump.txt", "w") as df:
-            df.write(f"loop_keys count: {len(loop_keys)}\n")
-            df.write(f"seq_bases count: {len(seq_bases)}\n")
-            df.write("seq_bases sample:\n")
-            for sb in list(seq_bases)[:10]:
-                df.write(f"  {sb}\n")
-            df.write("lfsr_stream in seq_bases (leaf match)?\n")
-            found_seq = False
-            for sb in seq_bases:
-                if "lfsr_stream" in sb:
-                    df.write(f"  YES: {sb}\n")
-                    found_seq = True
-            if not found_seq: df.write("  NO\n")
-
-            df.write("lfsr_stream in loop_keys?\n")
-            found_loop = False
-            for lk in loop_keys:
-                if "lfsr_stream" in lk:
-                    df.write(f"  YES: {lk}\n")
-                    found_loop = True
-            if not found_loop: df.write("  NO\n")
-
-    except Exception as e:
-        print(f"Debug write failed: {e}")
-
     # keys that depend on loop/seq bases (fanout aliases)
     def _expr_bases(expr):
         if isinstance(expr, str):
@@ -1184,9 +1228,11 @@ def build_time_unrolled_truth_table(truthTableMap, H=0):
     root_width = {rb: _width_for_base(rb) for rb in loop_root_bases}
     base_unroll_depth = {}
     for bk in reach:
+        #print("bk ",bk)
         roots = roots_by_base.get(bk, set())
         if roots:
-            base_unroll_depth[bk] = max(root_width.get(r, _width_for_base(r)) for r in roots)
+            #base_unroll_depth[bk] = max(root_width.get(r, _width_for_base(r)) for r in roots)
+            base_unroll_depth[bk] = max(root_width.get(r, _width_for_base(r)) for r in root_width)
         else:
             base_unroll_depth[bk] = _width_for_base(bk)
 
@@ -1246,7 +1292,8 @@ def build_time_unrolled_truth_table(truthTableMap, H=0):
     for key, expr in truthTableMap.items():
         base = _base(key)
         if base in loop_root_bases and key in loop_keys:
-            local_h = base_unroll_depth.get(base, _width_for_base(base))
+            # For loop roots, unroll one extra step: width + 1.
+            local_h = base_unroll_depth.get(base, _width_for_base(base)) + 1
             for t in range(local_h):
                 lhs = f"{key}@{t + 1}"
                 rhs = _rewrite(expr, t)
@@ -1255,12 +1302,23 @@ def build_time_unrolled_truth_table(truthTableMap, H=0):
                 sigs.add(lhs)
         elif key in dep_keys:
             local_h = base_unroll_depth.get(base, _width_for_base(base))
-            for t in range(local_h + 1):
-                lhs = f"{key}@{t}"
-                rhs = _rewrite(expr, t)
-                rhs = _expand_eq(rhs)
-                unrolled[lhs] = _simplify(rhs)
-                sigs.add(lhs)
+            if _is_seq_base(base):
+                # Sequential assignment (`<=`) advances state: key@{t+1} from RHS@t.
+                # Do not define key@0 from RHS; keep @0 as a root when needed.
+                for t in range(local_h):
+                    lhs = f"{key}@{t + 1}"
+                    rhs = _rewrite(expr, t)
+                    rhs = _expand_eq(rhs)
+                    unrolled[lhs] = _simplify(rhs)
+                    sigs.add(lhs)
+            else:
+                # Combinational assignment (`assign` / blocking logic) is same-cycle.
+                for t in range(local_h + 1):
+                    lhs = f"{key}@{t}"
+                    rhs = _rewrite(expr, t)
+                    rhs = _expand_eq(rhs)
+                    unrolled[lhs] = _simplify(rhs)
+                    sigs.add(lhs)
         else:
             lhs = key
             rhs = _expand_eq(expr)

@@ -58,7 +58,7 @@ module modmult(clk, rst, ds, mpand, mplier, modulus,product,ready);
             if (count == 6'd32) begin
                 ready <= 1'b1;
             end else begin
-                //if (mpreg[0]) prodreg <= (prodreg + mcreg) % modulus;
+                //FIXME if (mpreg[0]) prodreg <= (prodreg + mcreg) % modulus;
 				if (mpreg[0]) prodreg <= modulus;
                 mcreg <= (mcreg << 1) % modulus;
                 mpreg <= mpreg >> 1;

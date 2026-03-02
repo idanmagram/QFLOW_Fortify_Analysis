@@ -352,6 +352,27 @@ def populateSigProbs_recon_dp(signalNames, s_hat, s_hat_0, s_hat_1,
                 stack.append(p)
         return False
 
+    def extract_signal_width_from_range(signal_name):
+        """Return width from trailing [msb:lsb] in a signal string.
+
+        Examples:
+          top.AES.r6.t3.t0.u_s.in[31:0] -> 32
+          top.sig[7:7] -> 1
+        Returns None when no valid range is found.
+        """
+        if not isinstance(signal_name, str):
+            return None
+        if "[" not in signal_name or "]" not in signal_name or ":" not in signal_name:
+            return None
+        try:
+            rng = signal_name.rsplit("[", 1)[1].split("]", 1)[0]
+            msb_s, lsb_s = rng.split(":", 1)
+            msb = int(msb_s.strip())
+            lsb = int(lsb_s.strip())
+            return abs(msb - lsb) + 1
+        except Exception:
+            return None
+
     def _expr_input_reachable(expr):
         if isinstance(expr, int):
             return False
@@ -413,9 +434,11 @@ def populateSigProbs_recon_dp(signalNames, s_hat, s_hat_0, s_hat_1,
                 #if a == "top.U_RSA.indata[31:0]":
                     #print("lior")
                 floor = expr[3] if len(expr) > 3 else 0.0
-                if (not isinstance(a, int) and '[0:0]' not in a and _expr_input_reachable(a) ) or (
-                      not  isinstance(b, int) and '[0:0]' not in b and _expr_input_reachable(b)):
-                    return 1
+                a_width = extract_signal_width_from_range(a)
+                b_width = extract_signal_width_from_range(b)
+                if (not isinstance(a, int) and a_width > 10 and _expr_input_reachable(a) ) or (
+                      not  isinstance(b, int) and b_width > 10 and _expr_input_reachable(b)):
+                    return 0.5
                 abits = _bits_from_bus(a)
                 bbits = _bits_from_bus(b) if isinstance(b, str) else None
                 if abits is None:
@@ -445,9 +468,11 @@ def populateSigProbs_recon_dp(signalNames, s_hat, s_hat_0, s_hat_1,
             if op == "Eq" and 'count' not in a:
                 print("a 2 is ", a)
             if op == "Eq" and (a in sigWidths and sigWidths[a] > 10):
-                if (isinstance(a, int) and _expr_input_reachable(b)) or (
-                        isinstance(b, int) and _expr_input_reachable(a)):
-                    return 1
+                a_width = extract_signal_width_from_range(a)
+                b_width = extract_signal_width_from_range(b)
+                if (not isinstance(a, int) and a_width > 10 and _expr_input_reachable(a)) or (
+                        not isinstance(b, int) and b_width > 10 and _expr_input_reachable(b)):
+                    return 0.5
             return gate_formula(op, _expr_prob(a, ref_name, ref_val), _expr_prob(b, ref_name, ref_val))
         return 0.5
 
@@ -531,8 +556,10 @@ def populateSigProbs_recon_dp(signalNames, s_hat, s_hat_0, s_hat_1,
                 a = exp[1] if len(exp) > 1 else 0
                 b = exp[2] if len(exp) > 2 else 0
                 if op == "Eq":
-                    if (isinstance(a, int) and _expr_input_reachable(b)) or (
-                            isinstance(b, int) and _expr_input_reachable(a)):
+                    a_width = extract_signal_width_from_range(a)
+                    b_width = extract_signal_width_from_range(b)
+                    if (not isinstance(a, int) and a_width > 10 and _expr_input_reachable(a)) or (
+                            not isinstance(b, int) and b_width > 10 and _expr_input_reachable(b)):
                         s_hat[sig] = 1.0
                         s_hat_0[sig] = {ref: 1.0 for ref in refSigBitNames}
                         s_hat_1[sig] = {ref: 1.0 for ref in refSigBitNames}

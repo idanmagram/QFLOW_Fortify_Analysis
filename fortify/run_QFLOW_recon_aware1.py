@@ -266,13 +266,13 @@ def main(input_file_path, top_module_name, ref_module_name, ref_instance_name,
     results = estimate_c_and_pbv_from_conditional_probs(
         s_hat_0, s_hat_1, s_hat, refSigBitNames, signalNames, target_signals=outputSigBitNames)
     # aggregate per base signal/ref (max over time slices)
-    '''
-    top_150 = sorted(results.items(), key=lambda x: x[1]['Leakage'], reverse=True)[:150]
+
+    top_150 = sorted(results.items(), key=lambda x: x[1]['Leakage'], reverse=True)[:500]
 
     print("\nTop 150 signals with highest leakage: not aggregated")
     for (sig, ref), metrics in top_150:
         print(f"Signal: {sig}, Ref: {ref}, "f"Leakage: {metrics['Leakage']:.15f}, PBV: {metrics['PBV']:.15f}")
-    '''
+
     aggregated = {}
     for (sig, ref), metrics in results.items():
         base_sig = sig.split("@")[0]
@@ -281,7 +281,7 @@ def main(input_file_path, top_module_name, ref_module_name, ref_instance_name,
         if key not in aggregated or metrics['Leakage'] > aggregated[key]['Leakage']:
             aggregated[key] = metrics
 
-    top_150 = sorted(aggregated.items(), key=lambda x: x[1]['Leakage'], reverse=True)[:150]
+    top_150 = sorted(aggregated.items(), key=lambda x: x[1]['Leakage'], reverse=True)[:300]
 
     print("\nTop 150 signals with highest leakage:")
     for (sig, ref), metrics in top_150:
