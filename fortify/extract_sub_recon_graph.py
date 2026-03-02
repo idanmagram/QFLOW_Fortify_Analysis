@@ -122,7 +122,6 @@ def extract_sub_recon_graph(
 
             #leaky_outputs_set.add("top.Antena[0:0]@0")
     else:
-        print("good")
         leaky_outputs_set = set(leaky_outputs)
 
     parents, children = _build_parents_children(truth_table_map)

@@ -1130,7 +1130,7 @@ def getInternalSignalNames(module_name, instance_name):
 # Build a time-unrolled truth table map.
 # Only true loop bases are unrolled by width; dependents inherit width from
 # loop base(s) they transitively depend on. H is used only as fallback.
-def build_time_unrolled_truth_table(truthTableMap, H=0):
+def build_time_unrolled_truth_table(truthTableMap, UNROLL_DEPTH=0):
     def _base(sig):
         if not isinstance(sig, str):
             return None
@@ -1223,7 +1223,7 @@ def build_time_unrolled_truth_table(truthTableMap, H=0):
         inferred = _infer_width_from_keys(base_name)
         if isinstance(inferred, int) and inferred > 0:
             return inferred
-        return H if isinstance(H, int) and H > 0 else 1
+        return UNROLL_DEPTH if isinstance(UNROLL_DEPTH, int) and UNROLL_DEPTH > 0 else 1
 
     root_width = {rb: _width_for_base(rb) for rb in loop_root_bases}
     base_unroll_depth = {}

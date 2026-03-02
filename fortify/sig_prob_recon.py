@@ -288,7 +288,6 @@ def gate_prob_recon_dp(op, a, b, Z, truthTableMap, clamps, atomic_set,
         cache = {}
         pA = prob_with_clamps_atomic(a, truthTableMap, clamps, cache, atomic_set,
                                      s_hat, s_hat_0, s_hat_1, ref_name)
-        print("pA = {}".format(pA))
         pB = prob_with_clamps_atomic(b, truthTableMap, clamps, cache, atomic_set,
                                      s_hat, s_hat_0, s_hat_1, ref_name)
         return gate_formula(op, pA, pB)
@@ -390,8 +389,6 @@ def populateSigProbs_recon_dp(signalNames, s_hat, s_hat_0, s_hat_1,
                     if _is_input_reachable(r):
                         return True
                 else:
-                    #if all(_is_input_reachable(b) for b in bits):
-                    #    return True
                     return (_is_input_reachable(bits[0]))
             return False
         return False
@@ -431,8 +428,6 @@ def populateSigProbs_recon_dp(signalNames, s_hat, s_hat_0, s_hat_1,
 
                 a = expr[1] if len(expr) > 1 else ""
                 b = expr[2] if len(expr) > 2 else 0
-                #if a == "top.U_RSA.indata[31:0]":
-                    #print("lior")
                 floor = expr[3] if len(expr) > 3 else 0.0
                 a_width = extract_signal_width_from_range(a)
                 b_width = extract_signal_width_from_range(b)
@@ -507,9 +502,6 @@ def populateSigProbs_recon_dp(signalNames, s_hat, s_hat_0, s_hat_1,
     #print("all signals ", order)
     #return
     for sig in order:
-        #print("-----sig-----: ",sig)
-        if sig == 'top.Tj_Trigger.Tj_Trig[0:0]@9' and recon_only_set != None:
-            print("idan!!!!!! ",truthTableMap[sig])
         if sig in s_hat:
             if sig not in eff_ancestors:
                 eff_ancestors[sig] = {sig}

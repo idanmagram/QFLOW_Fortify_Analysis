@@ -3,7 +3,6 @@ import argparse
 from collections import defaultdict
 import module_maps
 import os
-import sig_prob
 import sig_prob_recon
 from tqdm import tqdm
 import time
