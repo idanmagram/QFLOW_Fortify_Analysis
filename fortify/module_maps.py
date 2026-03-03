@@ -604,7 +604,7 @@ def populateModuleExprMap(module_name, instance_name):
                         rhsAst = getattr(ast.right, "var", ast.right)
 
                         lname = getSigName(lhsAst, instance_name)
-                        rname = getSigName(rhsAst, instance_name)
+                        rname    = getSigName(rhsAst, instance_name)
 
                         lnamesplit = lname.rsplit('[', 1)
                         lnameonly = lnamesplit[0]
@@ -720,7 +720,6 @@ def populateModuleExprMap(module_name, instance_name):
 
 
                             elif isinstance(rhsAst, vast.IntConst):
-                                print("!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!")
                                 # Convert Verilog literal (e.g. "8'h01") to integer
                                 const_val = utils.verilogIntConstToInt(rhsAst)
                                 width = high - low + 1
@@ -737,6 +736,17 @@ def populateModuleExprMap(module_name, instance_name):
                                 #print("fName = {}".format(fName))
                                 width = high - low + 1
                                 #print("width = {}".format(width))
+
+                                def _is_pure_self_shift_branch(branch_ast):
+                                    # Only treat explicit self right-shifts as shift-register behavior.
+                                    # Example: SHIFTReg <= SHIFTReg >> k
+                                    if not isinstance(branch_ast, vast.Srl):
+                                        return False
+                                    left_name = getSigName(branch_ast.left, instance_name)
+                                    return isinstance(left_name, str) and left_name.rsplit('[', 1)[0] == lnameonly
+
+                                pure_self_shift_true = _is_pure_self_shift_branch(rhsAst.true_value)
+                                pure_self_shift_false = _is_pure_self_shift_branch(rhsAst.false_value)
 
                                 def _bit_at(expr_name, idx):
                                     if isinstance(expr_name, int):
@@ -937,7 +947,6 @@ def populateModuleExprMap(module_name, instance_name):
                                                 lnameonly):
                                             shift_delta, wrap = _normalize_shift(ref_idx, i)
                                             if shift_delta != 0:
-                                                print("hi shift",shift_delta, " data_expr", data_expr, " depth_limit", depth_limit)
                                                 chain_expr = _build_shift_chain(i, shift_delta, depth_limit, wrap,
                                                                                 data_expr)
                                                 truthTableMap['{}[{}:{}]'.format(lnameonly, i, i)] = chain_expr
@@ -1130,7 +1139,7 @@ def getInternalSignalNames(module_name, instance_name):
 # Build a time-unrolled truth table map.
 # Only true loop bases are unrolled by width; dependents inherit width from
 # loop base(s) they transitively depend on. H is used only as fallback.
-def build_time_unrolled_truth_table(truthTableMap, UNROLL_DEPTH=0):
+def build_time_unrolled_truth_table(truthTableMap, UNROLL_DEPTH):
     def _base(sig):
         if not isinstance(sig, str):
             return None

@@ -103,7 +103,6 @@ def prob_with_clamps_atomic(sig, truthTableMap, clamps, cache, atomic_set,
 
     if isinstance(sig, str):
         if sig in visiting:
-            #print(f"[cycle] {sig} -> atomic fallback")
             cache[key] = _atomic_prob(sig, clamps, s_hat, s_hat_0, s_hat_1, ref_name)
             return cache[key]
         visiting.add(sig)
@@ -345,7 +344,7 @@ def populateSigProbs_recon_dp(signalNames, s_hat, s_hat_0, s_hat_1,
                 continue
             seen.add(n)
             for p in parents.get(n, set()):
-                print("p ",p, "for bit_name ",bit_name)
+                #print("p ",p, "for bit_name ",bit_name)
                 if p in inputSigBitNames or p+'@0' in inputSigBitNames:
                     return True
                 stack.append(p)
@@ -454,14 +453,13 @@ def populateSigProbs_recon_dp(signalNames, s_hat, s_hat_0, s_hat_1,
                 parts = expr[1:]
                 if not parts:
                     return 0.0
-                return sum(_expr_prob(p, ref_name, ref_val) for p in parts) / len(parts)
+                return (sum(_expr_prob(p, ref_name, ref_val) for p in parts)+1) / len(parts)
             if op in ("Srl", "Sll", "Plus", "Times", "Minus"):
                 left = expr[1] if len(expr) > 1 else 0
                 return _expr_prob(left, ref_name, ref_val)
             a = expr[1] if len(expr) > 1 else 0
             b = expr[2] if len(expr) > 2 else 0
-            if op == "Eq" and 'count' not in a:
-                print("a 2 is ", a)
+
             if op == "Eq" and (a in sigWidths and sigWidths[a] > 10):
                 a_width = extract_signal_width_from_range(a)
                 b_width = extract_signal_width_from_range(b)
@@ -540,7 +538,6 @@ def populateSigProbs_recon_dp(signalNames, s_hat, s_hat_0, s_hat_1,
                 s_hat[sig] = _expr_prob(target)
                 s_hat_0[sig] = {ref: _expr_prob(target, ref, 0) for ref in refSigBitNames}
                 s_hat_1[sig] = {ref: _expr_prob(target, ref, 1) for ref in refSigBitNames}
-                #print("1eff_ancestors[sig] = ", eff_ancestors[sig]," of sig ",sig)
                 eff_ancestors[sig] = _direct_inputs(target)
                 continue
 
@@ -567,7 +564,7 @@ def populateSigProbs_recon_dp(signalNames, s_hat, s_hat_0, s_hat_1,
                 shared = anc_a & anc_b
                 if (recon_only_set is not None) and (sig in recon_only_set) and shared:
                 #if shared:
-                    print("exp: ", exp, " anc_a ", anc_a, " anc_b ", anc_b, " shared ", shared)
+                    #print("exp: ", exp, " anc_a ", anc_a, " anc_b ", anc_b, " shared ", shared)
                     Z = sorted(shared)
                     s_hat[sig] = gate_prob_recon_dp(
                         op, a, b, Z, truthTableMap, {},

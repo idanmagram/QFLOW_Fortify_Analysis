@@ -76,8 +76,8 @@ def main(input_file_path, top_module_name, ref_module_name, ref_instance_name,
         ref_module_name, ref_instance_name,
         [f'{ref_sig_name}[{j}:{j}]' for j in range(ref_sig_width)]
     )
-    # time-unroll looped signals to depth UNROLL_DEPTH
-    truthTableMap, signalNames_unrolled = module_maps.build_time_unrolled_truth_table(truthTableMap, H=UNROLL_DEPTH)
+    # time-unroll for looped signals
+    truthTableMap, signalNames_unrolled = module_maps.build_time_unrolled_truth_table(truthTableMap, UNROLL_DEPTH)
 
     # time-index reference bits (treated as looped secrets)
     refSigBitNames = []
@@ -196,7 +196,6 @@ def main(input_file_path, top_module_name, ref_module_name, ref_instance_name,
                 target_signals=outputSigBitNames)
 
             leaky_outputs = extract_leaky_outputs(first_pass_results, leakage_threshold=1.0)
-            #leaky_outputs.add("top.Antena[0:0]@0")
             recon_only_set = extract_sub_recon_graph(
                 truth_table_map=truthTableMap,
                 ref_sig_bit_names=refSigBitNames,
@@ -261,16 +260,17 @@ def main(input_file_path, top_module_name, ref_module_name, ref_instance_name,
         # print("s_hat0: ",s_hat_0)
         # print("s_hat1: ", s_hat_1)
 
-    #print("outputSigBitNames ", outputSigBitNames)
     results = estimate_c_and_pbv_from_conditional_probs(
         s_hat_0, s_hat_1, s_hat, refSigBitNames, signalNames, target_signals=outputSigBitNames)
     # aggregate per base signal/ref (max over time slices)
 
+    '''
     top_150 = sorted(results.items(), key=lambda x: x[1]['Leakage'], reverse=True)[:500]
 
     print("\nTop 150 signals with highest leakage: not aggregated")
     for (sig, ref), metrics in top_150:
         print(f"Signal: {sig}, Ref: {ref}, "f"Leakage: {metrics['Leakage']:.15f}, PBV: {metrics['PBV']:.15f}")
+    '''
 
     aggregated = {}
     for (sig, ref), metrics in results.items():
