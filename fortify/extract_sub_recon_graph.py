@@ -16,8 +16,8 @@ def extract_leaky_outputs(
     """Return output signals whose leakage exceeds threshold."""
     return {sig
         for (sig, _ref), metrics in results.items()
-        if metrics.get("Leakage", 0.0) > leakage_threshold
-        if metrics.get("Leakage", 0.0) > leakage_threshold
+        if metrics.get('Leakage_PBV', 0.0) > leakage_threshold
+        if metrics.get('Leakage_PBV', 0.0) > leakage_threshold
     }
 
 

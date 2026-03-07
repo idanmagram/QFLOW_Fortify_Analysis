@@ -1,3 +1,4 @@
+import math
 import sys
 import argparse
 from collections import defaultdict
@@ -15,8 +16,125 @@ UNROLL_DEPTH = 32
 
 sys.setrecursionlimit(100000)
 
-
 def estimate_c_and_pbv_from_conditional_probs(s_hat_0, s_hat_1, s_hat,
+                                              refSigBitNames, signalNames,
+                                              target_signals=None):
+
+    channel_C = defaultdict(lambda: defaultdict(float))
+    joint_J   = defaultdict(lambda: defaultdict(float))
+    results   = {}
+
+    signals_to_check = target_signals if target_signals is not None else signalNames
+
+    for sig in signals_to_check:
+        if not isinstance(sig, str):
+            continue
+        if sig in refSigBitNames:
+            continue
+
+        for ref in refSigBitNames:
+
+            if sig not in s_hat_0 or sig not in s_hat_1:
+                continue
+            if ref not in s_hat_0[sig] or ref not in s_hat_1[sig]:
+                continue
+
+            p_y1_h0 = s_hat_0[sig][ref]
+            p_y1_h1 = s_hat_1[sig][ref]
+
+            # channel probabilities
+            channel_C[0][1] = p_y1_h0
+            channel_C[0][0] = 1 - p_y1_h0
+            channel_C[1][1] = p_y1_h1
+            channel_C[1][0] = 1 - p_y1_h1
+
+            prior_0 = s_hat.get(ref, 0.5)
+            prior_1 = 1 - prior_0
+
+            # joint distribution
+            for y in [0,1]:
+                joint_J[y][0] = prior_0 * channel_C[0][y]
+                joint_J[y][1] = prior_1 * channel_C[1][y]
+
+            # -----------------------------
+            # PBV (what you already compute)
+            # -----------------------------
+
+            pbv = sum(max(joint_J[y][0], joint_J[y][1]) for y in [0,1])
+            leakage_pbv = pbv / max(prior_0, prior_1)
+
+            # -----------------------------
+            # Posterior probabilities
+            # -----------------------------
+
+            denom1 = p_y1_h0 + p_y1_h1
+            denom0 = (1 - p_y1_h0) + (1 - p_y1_h1)
+
+            if denom1 > 0:
+                p_s1_y1 = p_y1_h1 / denom1
+            else:
+                p_s1_y1 = 0.5
+
+            if denom0 > 0:
+                p_s1_y0 = (1 - p_y1_h1) / denom0
+            else:
+                p_s1_y0 = 0.5
+
+            # -----------------------------
+            # Posterior gap (strong simple metric)
+            # -----------------------------
+
+            posterior_gap = abs(p_s1_y1 - p_s1_y0)
+
+            # -----------------------------
+            # Mutual information
+            # -----------------------------
+
+            def h(x):
+                if x <= 0 or x >= 1:
+                    return 0
+                return -(x*math.log2(x) + (1-x)*math.log2(1-x))
+
+            q = prior_0*p_y1_h0 + prior_1*p_y1_h1
+
+            mutual_info = h(q) - prior_0*h(p_y1_h0) - prior_1*h(p_y1_h1)
+
+            # -----------------------------
+            # Likelihood ratio (rare-event sensitive)
+            # -----------------------------
+
+            eps = 1e-15
+            lr1 = (p_y1_h1 + eps) / (p_y1_h0 + eps)
+            lr0 = ((1-p_y1_h1) + eps) / ((1-p_y1_h0) + eps)
+
+            log_lr_gap = abs(math.log(lr1) - math.log(lr0))
+            log_lr_gap = math.tanh(log_lr_gap / 2)
+
+            # -----------------------------
+            # Log-odds gap of posteriors
+            # -----------------------------
+
+            def logit(x):
+                x = min(max(x, 1e-12), 1-1e-12)
+                return math.log(x/(1-x))
+
+            logit_gap = abs(logit(p_s1_y1) - logit(p_s1_y0))
+
+            results[(sig,ref)] = {
+                'PBV': pbv,
+                'Leakage_PBV': leakage_pbv,
+                'Posterior_gap': posterior_gap,
+                'Logit_gap': logit_gap,
+                'Log_LR_gap': log_lr_gap,
+                'Mutual_information': mutual_info,
+                'Posterior_Y1': p_s1_y1,
+                'Posterior_Y0': p_s1_y0,
+                'prior': max(prior_0, prior_1)
+            }
+
+    return results
+
+def estimate_c_and_pbv_from_conditional_probs1(s_hat_0, s_hat_1, s_hat,
                                               refSigBitNames, signalNames, target_signals=None):
     channel_C = defaultdict(lambda: defaultdict(float))  # C[h][y]
     joint_J   = defaultdict(lambda: defaultdict(float))  # J[y][h]
@@ -37,6 +155,8 @@ def estimate_c_and_pbv_from_conditional_probs(s_hat_0, s_hat_1, s_hat,
 
             p_y1_h0 = s_hat_0[sig][ref]
             p_y1_h1 = s_hat_1[sig][ref]
+            print("p_y1_h0 ",p_y1_h0," for sig ",sig)
+            print("p_y1_h1 ",p_y1_h1," for sig ",sig)
 
             channel_C[0][1] = p_y1_h0
             channel_C[0][0] = 1 - p_y1_h0
@@ -277,15 +397,16 @@ def main(input_file_path, top_module_name, ref_module_name, ref_instance_name,
         base_sig = sig.split("@")[0]
         base_ref = ref.split("@")[0]
         key = (base_sig, base_ref)
-        if key not in aggregated or metrics['Leakage'] > aggregated[key]['Leakage']:
+        if key not in aggregated or metrics['Leakage_PBV'] > aggregated[key]['Leakage_PBV']:
             aggregated[key] = metrics
 
-    top_150 = sorted(aggregated.items(), key=lambda x: x[1]['Leakage'], reverse=True)[:300]
-
-    print("\nTop 150 signals with highest leakage:")
+    top_150 = sorted(aggregated.items(),key=lambda x: x[1]['Leakage_PBV'],reverse=True)[:150]
+    print("\nTop 150 signals with highest leakage:\n")
     for (sig, ref), metrics in top_150:
-        print(f"Signal: {sig}, Ref: {ref}, "f"Leakage: {metrics['Leakage']:.15f}, PBV: {metrics['PBV']:.15f}")
-
+        print(
+            f"Signal: {sig}, Ref: {ref}, "
+            f"Log_LR_gap: {metrics['Log_LR_gap']:.15f}, "
+            f"Leakage_PBV: {metrics['Leakage_PBV']:.15f}")
     print()
     endTime = time.time()
     print("Total time taken: {:.4f}s".format(endTime - startTime))
