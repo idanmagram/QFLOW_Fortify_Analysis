@@ -1,6 +1,7 @@
 # sig_prob_recon.py
 import sys
 from itertools import product
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from recon_graph_artifacts import build_recon_graph_artifacts
 
 sys.setrecursionlimit(100000)
@@ -15,7 +16,8 @@ def incSigProb(a, b, op):
     elif op == "Or":
         return a + b - a * b
     elif op == "Xor":
-        return a + b - 2.0 * a * b
+        #return a + b - 2.0 * a * b
+        return a + b - a * b
     elif op == "Eq":
         return a * b + (1.0 - a) * (1.0 - b)
     elif op == "Noteq":
@@ -630,3 +632,284 @@ def populateSigProbs_recon_dp(signalNames, s_hat, s_hat_0, s_hat_1,
         s_hat_1[sig] = {ref: 0.5 for ref in refSigBitNames}
         eff_ancestors[sig] = {sig}
         atomic_set.add(sig)
+
+
+def populateSigProbs_recon_dp_parallel(signalNames, s_hat, s_hat_0, s_hat_1,
+                                       truthTableMap, refSigBitNames, inputSigBitNames, sigWidths,
+                                       recon_only_set=None, graph_artifacts=None, max_workers=None,
+                                       min_parallel_level_size=128, chunk_size=32, debug=True):
+    if max_workers is not None and max_workers <= 1:
+        # Fast path: avoid executor/future overhead when effectively serial.
+        return populateSigProbs_recon_dp(
+            signalNames, s_hat, s_hat_0, s_hat_1,
+            truthTableMap, refSigBitNames, inputSigBitNames, sigWidths,
+            recon_only_set=recon_only_set, graph_artifacts=graph_artifacts
+        )
+
+    if graph_artifacts is None:
+        graph_artifacts = build_recon_graph_artifacts(signalNames, truthTableMap)
+    parents = graph_artifacts["parents"]
+    levels = graph_artifacts.get("levels", [[s] for s in graph_artifacts["order"]])
+
+    eff_ancestors = {}
+    atomic_set = set(inputSigBitNames) | set(refSigBitNames)
+    known_ops = {"Cond", "Not", "Mix", "And", "Or", "Xor", "Eq", "NotEq",
+                 "Nand", "Nor", "Srl", "Sll", "Plus", "Times", "Minus",
+                 "EqVec", "EqBus"}
+    binary_ops = {"And", "Or", "Xor", "Eq", "NotEq", "Nand", "Nor"}
+
+    def _direct_inputs(expr):
+        if isinstance(expr, int):
+            return set()
+        if isinstance(expr, str):
+            return {expr}
+        if isinstance(expr, list):
+            op = expr[0] if expr else None
+            if op not in known_ops:
+                return _direct_inputs(op)
+            return _extract_signal_names(expr)
+        return set()
+
+    def _is_input_reachable(bit_name):
+        if bit_name in inputSigBitNames:
+            return True
+        seen = set()
+        stack = [bit_name]
+        while stack:
+            n = stack.pop()
+            if n in seen:
+                continue
+            seen.add(n)
+            for p in parents.get(n, set()):
+                if p in inputSigBitNames or p + '@0' in inputSigBitNames:
+                    return True
+                stack.append(p)
+        return False
+
+    def extract_signal_width_from_range(signal_name):
+        if not isinstance(signal_name, str):
+            return None
+        if "[" not in signal_name or "]" not in signal_name or ":" not in signal_name:
+            return None
+        try:
+            rng = signal_name.rsplit("[", 1)[1].split("]", 1)[0]
+            msb_s, lsb_s = rng.split(":", 1)
+            msb = int(msb_s.strip())
+            lsb = int(lsb_s.strip())
+            return abs(msb - lsb) + 1
+        except Exception:
+            return None
+
+    def _expr_input_reachable(expr):
+        if isinstance(expr, int):
+            return False
+        if isinstance(expr, str):
+            bits = _bits_from_bus(expr)
+            if bits is None:
+                return _is_input_reachable(expr)
+            return _is_input_reachable(bits[0])
+        if isinstance(expr, list):
+            refs = _extract_signal_names(expr)
+            for r in refs:
+                bits = _bits_from_bus(r)
+                if bits is None:
+                    if _is_input_reachable(r):
+                        return True
+                else:
+                    return _is_input_reachable(bits[0])
+            return False
+        return False
+
+    def _compute_one(sig, atomic_snapshot, eff_snapshot):
+        if sig in s_hat:
+            return None
+
+        exp = truthTableMap.get(sig, None)
+        if exp is None:
+            return {
+                "sig": sig,
+                "p": 0.5,
+                "p0": {ref: 0.5 for ref in refSigBitNames},
+                "p1": {ref: 0.5 for ref in refSigBitNames},
+                "anc": {sig},
+                "add_atomic": True,
+            }
+
+        if isinstance(exp, int):
+            val = float(exp)
+            return {
+                "sig": sig,
+                "p": val,
+                "p0": {ref: val for ref in refSigBitNames},
+                "p1": {ref: val for ref in refSigBitNames},
+                "anc": set(),
+                "add_atomic": False,
+            }
+
+        if isinstance(exp, str):
+            return {
+                "sig": sig,
+                "p": s_hat.get(exp, 0.5),
+                "p0": {ref: s_hat_0.get(exp, {}).get(ref, 0.5) for ref in refSigBitNames},
+                "p1": {ref: s_hat_1.get(exp, {}).get(ref, 0.5) for ref in refSigBitNames},
+                "anc": eff_snapshot.get(exp, {exp}),
+                "add_atomic": False,
+            }
+
+        if isinstance(exp, list):
+            op = exp[0] if exp else None
+
+            if op in binary_ops:
+                a = exp[1] if len(exp) > 1 else 0
+                b = exp[2] if len(exp) > 2 else 0
+
+                if op == "Eq":
+                    a_width = extract_signal_width_from_range(a)
+                    b_width = extract_signal_width_from_range(b)
+                    if (not isinstance(a, int) and a_width and a_width > 10 and _expr_input_reachable(a)) or \
+                       (not isinstance(b, int) and b_width and b_width > 10 and _expr_input_reachable(b)):
+                        return {
+                            "sig": sig,
+                            "p": 1.0,
+                            "p0": {ref: 1.0 for ref in refSigBitNames},
+                            "p1": {ref: 1.0 for ref in refSigBitNames},
+                            "anc": {sig},
+                            "add_atomic": True,
+                        }
+
+                anc_a = eff_snapshot.get(a, _direct_inputs(a)) if isinstance(a, str) else _direct_inputs(a)
+                anc_b = eff_snapshot.get(b, _direct_inputs(b)) if isinstance(b, str) else _direct_inputs(b)
+                shared = anc_a & anc_b
+
+                if (recon_only_set is not None) and (sig in recon_only_set) and shared:
+                    Z = sorted(shared)
+                    p = gate_prob_recon_dp(
+                        op, a, b, Z, truthTableMap, {},
+                        atomic_snapshot, s_hat, s_hat_0, s_hat_1, ref_name=None
+                    )
+                    p0 = {}
+                    p1 = {}
+                    for ref in refSigBitNames:
+                        z_eff = [z for z in Z if z != ref]
+                        p0[ref] = gate_prob_recon_dp(
+                            op, a, b, z_eff, truthTableMap, {ref: 0},
+                            atomic_snapshot, s_hat, s_hat_0, s_hat_1, ref_name=ref
+                        )
+                        p1[ref] = gate_prob_recon_dp(
+                            op, a, b, z_eff, truthTableMap, {ref: 1},
+                            atomic_snapshot, s_hat, s_hat_0, s_hat_1, ref_name=ref
+                        )
+                    return {
+                        "sig": sig,
+                        "p": p,
+                        "p0": p0,
+                        "p1": p1,
+                        "anc": {sig},
+                        "add_atomic": True,
+                    }
+
+                cache = {}
+                p = prob_with_clamps_atomic(exp, truthTableMap, {}, cache, atomic_snapshot,
+                                            s_hat, s_hat_0, s_hat_1, ref_name=None)
+                p0 = {}
+                p1 = {}
+                for ref in refSigBitNames:
+                    cache0 = {}
+                    cache1 = {}
+                    p0[ref] = prob_with_clamps_atomic(exp, truthTableMap, {ref: 0}, cache0, atomic_snapshot,
+                                                      s_hat, s_hat_0, s_hat_1, ref_name=ref)
+                    p1[ref] = prob_with_clamps_atomic(exp, truthTableMap, {ref: 1}, cache1, atomic_snapshot,
+                                                      s_hat, s_hat_0, s_hat_1, ref_name=ref)
+                return {
+                    "sig": sig,
+                    "p": p,
+                    "p0": p0,
+                    "p1": p1,
+                    "anc": set(anc_a | anc_b),
+                    "add_atomic": False,
+                }
+
+            cache = {}
+            p = prob_with_clamps_atomic(exp, truthTableMap, {}, cache, atomic_snapshot,
+                                        s_hat, s_hat_0, s_hat_1, ref_name=None)
+            p0 = {}
+            p1 = {}
+            for ref in refSigBitNames:
+                cache0 = {}
+                cache1 = {}
+                p0[ref] = prob_with_clamps_atomic(exp, truthTableMap, {ref: 0}, cache0, atomic_snapshot,
+                                                  s_hat, s_hat_0, s_hat_1, ref_name=ref)
+                p1[ref] = prob_with_clamps_atomic(exp, truthTableMap, {ref: 1}, cache1, atomic_snapshot,
+                                                  s_hat, s_hat_0, s_hat_1, ref_name=ref)
+            return {
+                "sig": sig,
+                "p": p,
+                "p0": p0,
+                "p1": p1,
+                "anc": _direct_inputs(exp),
+                "add_atomic": False,
+            }
+
+        return {
+            "sig": sig,
+            "p": 0.5,
+            "p0": {ref: 0.5 for ref in refSigBitNames},
+            "p1": {ref: 0.5 for ref in refSigBitNames},
+            "anc": {sig},
+            "add_atomic": True,
+        }
+
+    def _compute_chunk(sig_chunk, atomic_snapshot, eff_snapshot):
+        out = {}
+        for sig in sig_chunk:
+            res = _compute_one(sig, atomic_snapshot, eff_snapshot)
+            if res is not None:
+                out[sig] = res
+        return out
+
+    total_levels = len(levels)
+    if debug:
+        print(f"[parallel] start populateSigProbs_recon_dp_parallel: levels={total_levels}, max_workers={max_workers}", flush=True)
+
+    with ThreadPoolExecutor(max_workers=max_workers) as executor:
+        for level_idx, level in enumerate(levels, start=1):
+            pending = [sig for sig in level if sig not in s_hat]
+            if not pending:
+                continue
+
+            atomic_snapshot = set(atomic_set)
+            eff_snapshot = dict(eff_ancestors)
+            computed = {}
+
+            # Small levels are cheaper to run serially.
+            if len(pending) < max(min_parallel_level_size, chunk_size):
+                for sig in pending:
+                    res = _compute_one(sig, atomic_snapshot, eff_snapshot)
+                    if res is not None:
+                        computed[sig] = res
+            else:
+                chunks = [pending[i:i + chunk_size] for i in range(0, len(pending), chunk_size)]
+                future_map = {
+                    executor.submit(_compute_chunk, c, atomic_snapshot, eff_snapshot): idx
+                    for idx, c in enumerate(chunks)
+                }
+                if debug:
+                    print(f"[parallel] level {level_idx}/{total_levels}: pending={len(pending)}, chunks={len(chunks)}", flush=True)
+                for fut in as_completed(future_map):
+                    out = fut.result()
+                    if out:
+                        computed.update(out)
+
+            for sig in pending:
+                res = computed.get(sig)
+                if not res:
+                    continue
+                s_hat[sig] = res["p"]
+                s_hat_0[sig] = res["p0"]
+                s_hat_1[sig] = res["p1"]
+                eff_ancestors[sig] = res["anc"]
+                if res["add_atomic"]:
+                    atomic_set.add(sig)
+
+    if debug:
+        print("[parallel] done populateSigProbs_recon_dp_parallel", flush=True)

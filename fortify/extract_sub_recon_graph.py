@@ -4,8 +4,6 @@ This module mirrors the leakage subgraph extraction logic used in
 `run_fortify_seq.py` and exposes it as a callable function.
 """
 
-from __future__ import annotations
-
 from typing import Dict, Iterable, Optional, Set, Tuple
 
 

@@ -55,18 +55,30 @@ def build_recon_graph_artifacts(signal_names, truth_table_map):
     indeg = {s: len(parents.get(s, set())) for s in universe}
     q = [s for s, d in indeg.items() if d == 0]
     order = []
+    levels = []
     while q:
-        n = q.pop()
+        cur = list(q)
+        q = []
+        levels.append(cur)
+        for n in cur:
+            order.append(n)
+            for ch in children.get(n, set()):
+                indeg[ch] -= 1
+                if indeg[ch] == 0:
+                    q.append(ch)
+
+    # In case any nodes remain due unresolved cycles, keep deterministic fallback.
+    '''
+    remaining = [s for s in universe if s not in set(order)]
+    for n in remaining:
+        levels.append([n])
         order.append(n)
-        for ch in children.get(n, set()):
-            indeg[ch] -= 1
-            if indeg[ch] == 0:
-                q.append(ch)
+    '''
 
     return {
         "universe": universe,
         "parents": parents,
         "children": children,
         "order": order,
+        "levels": levels,
     }
-
