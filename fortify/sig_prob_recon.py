@@ -6,6 +6,59 @@ from recon_graph_artifacts import build_recon_graph_artifacts
 
 sys.setrecursionlimit(100000)
 
+LOWERABLE_OPS = {
+    "Cond", "Not", "Mix", "And", "Or", "Xor", "Eq", "NotEq",
+    "Nand", "Nor", "Srl", "Sll", "Plus", "Times", "Minus",
+    "EqVec", "EqBus"
+}
+
+
+def lower_truth_table_map(truth_table_map):
+    """Lower nested expression trees into named intermediate nodes.
+
+    This makes reconvergence visible at each binary merge point, because
+    every internal sub-expression gets a signal name in the map.
+    """
+    lowered = {}
+    tmp_counter = 0
+
+    def _new_tmp():
+        nonlocal tmp_counter
+        name = f"__recon_tmp__{tmp_counter}"
+        tmp_counter += 1
+        return name
+
+    def _lower_expr(expr):
+        if isinstance(expr, (int, str)):
+            return expr
+        if not isinstance(expr, list) or not expr:
+            return expr
+
+        op = expr[0]
+        if not isinstance(op, str):
+            return expr
+
+        # Keep unsupported list forms unchanged to preserve behavior.
+        if op not in LOWERABLE_OPS:
+            return expr
+
+        lowered_args = []
+        for arg in expr[1:]:
+            la = _lower_expr(arg)
+            if isinstance(la, list):
+                tmp = _new_tmp()
+                lowered[tmp] = la
+                lowered_args.append(tmp)
+            else:
+                lowered_args.append(la)
+        return [op] + lowered_args
+
+    for sig, expr in truth_table_map.items():
+        lowered[sig] = _lower_expr(expr)
+
+    return lowered
+
+
 # ------------------------------------------------------------
 # Incremental signal probability for standard logic gates.
 # ------------------------------------------------------------
@@ -112,7 +165,8 @@ def prob_with_clamps_atomic(sig, truthTableMap, clamps, cache, atomic_set,
             cache[key] = float(clamps[sig])
             visiting.remove(sig)
             return cache[key]
-        if sig in atomic_set or sig not in truthTableMap:
+        #if sig in atomic_set or sig not in truthTableMap:
+        if sig not in truthTableMap:
             cache[key] = _atomic_prob(sig, clamps, s_hat, s_hat_0, s_hat_1, ref_name)
             visiting.remove(sig)
             return cache[key]
@@ -301,6 +355,8 @@ def gate_prob_recon_dp(op, a, b, Z, truthTableMap, clamps, atomic_set,
         z_assign = dict(zip(Z, bits))
         clamps_z = {**clamps, **z_assign}
         cache = {}
+        if a == '__recon_tmp__1':
+            print("idan")
         pA_z = prob_with_clamps_atomic(a, truthTableMap, clamps_z, cache, atomic_set,
                                        s_hat, s_hat_0, s_hat_1, ref_name)
         pB_z = prob_with_clamps_atomic(b, truthTableMap, clamps_z, cache, atomic_set,
@@ -490,13 +546,22 @@ def populateSigProbs_recon_dp(signalNames, s_hat, s_hat_0, s_hat_1,
     def _direct_inputs(expr):
         if isinstance(expr, int):
             return set()
-        if isinstance(expr, str):
-            return {expr}
-        if isinstance(expr, list):
+
+        if isinstance(expr, list) or 'tmp' in expr:
             op = expr[0] if expr else None
+
             if op not in known_ops:
                 return _direct_inputs(op)
-            return _extract_signal_names(expr)
+            if 'tmp' in expr:
+                sigs = _extract_signal_names(truthTableMap[expr])
+            else:
+                sigs = _extract_signal_names(expr)
+            result = set()
+            for sig in sigs:
+                result |= eff_ancestors.get(sig, _direct_inputs(sig))
+            return result
+        if isinstance(expr, str):
+            return {expr}
         return set()
 
     #print("all signals ", order)
@@ -566,7 +631,7 @@ def populateSigProbs_recon_dp(signalNames, s_hat, s_hat_0, s_hat_1,
                 shared = anc_a & anc_b
                 if (recon_only_set is not None) and (sig in recon_only_set) and shared:
                 #if shared:
-                    #print("exp: ", exp, " anc_a ", anc_a, " anc_b ", anc_b, " shared ", shared)
+                    print("sig ", sig ," exp: ", exp, " anc_a ", anc_a, " anc_b ", anc_b, " shared ", shared)
                     Z = sorted(shared)
                     s_hat[sig] = gate_prob_recon_dp(
                         op, a, b, Z, truthTableMap, {},
@@ -586,7 +651,10 @@ def populateSigProbs_recon_dp(signalNames, s_hat, s_hat_0, s_hat_1,
                             atomic_set, s_hat, s_hat_0, s_hat_1, ref_name=ref
                         )
 
-                    eff_ancestors[sig] = {sig}
+                    if isinstance(sig, str) and sig.startswith("__recon_tmp__"):
+                        eff_ancestors[sig] = set(anc_a | anc_b)
+                    else:
+                        eff_ancestors[sig] = {sig}
                     #print("2eff_ancestors[sig] = ", eff_ancestors[sig], " of sig ", sig)
 
                     atomic_set.add(sig)
@@ -799,12 +867,13 @@ def populateSigProbs_recon_dp_parallel(signalNames, s_hat, s_hat_0, s_hat_1,
                             op, a, b, z_eff, truthTableMap, {ref: 1},
                             atomic_snapshot, s_hat, s_hat_0, s_hat_1, ref_name=ref
                         )
+                    anc_out = set(anc_a | anc_b) if (isinstance(sig, str) and sig.startswith("__recon_tmp__")) else {sig}
                     return {
                         "sig": sig,
                         "p": p,
                         "p0": p0,
                         "p1": p1,
-                        "anc": {sig},
+                        "anc": anc_out,
                         "add_atomic": True,
                     }
 

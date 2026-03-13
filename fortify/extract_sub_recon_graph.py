@@ -7,17 +7,38 @@ This module mirrors the leakage subgraph extraction logic used in
 from typing import Dict, Iterable, Optional, Set, Tuple
 
 
+from collections import defaultdict
+from typing import Dict, Tuple, Set
+
+from collections import defaultdict
+from typing import Dict, Tuple, Set
+
 def extract_leaky_outputs(
     results: Dict[Tuple[str, str], Dict[str, float]],
     leakage_threshold: float = 1.0,
+    top_k_per_base: int = 2,
 ) -> Set[str]:
-    """Return output signals whose leakage exceeds threshold."""
-    return {sig
-        for (sig, _ref), metrics in results.items()
-        if metrics.get('Leakage_PBV', 0.0) > leakage_threshold
-        if metrics.get('Leakage_PBV', 0.0) > leakage_threshold
-    }
+    """Return leaky outputs, keeping top-k per base signal (ignoring @time)."""
 
+    grouped = defaultdict(set)
+
+    for (sig, _ref), metrics in results.items():
+        leakage = metrics.get("Leakage_PBV", 0.0)
+
+        if leakage > leakage_threshold:
+            base_sig = sig.split("@")[0]
+            grouped[base_sig].add((sig, leakage))  # set prevents duplicates
+
+    selected = set()
+
+    for base_sig, items in grouped.items():
+        # convert to list for sorting
+        items = sorted(items, key=lambda x: x[1], reverse=True)
+
+        for sig, _ in items[:top_k_per_base]:
+            selected.add(sig)
+
+    return selected
 
 def _extract_signal_names(exp, self_name=None):
     if isinstance(exp, int):
