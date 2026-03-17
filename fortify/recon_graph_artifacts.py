@@ -74,7 +74,9 @@ def build_recon_graph_artifacts(signal_names, truth_table_map):
         levels.append([n])
         order.append(n)
     '''
-
+    with open("parents.txt", "w", encoding="utf-8") as f:
+        for sig in sorted(parents):
+            f.write(f"{sig}: {sorted(parents[sig])}\n")
     return {
         "universe": universe,
         "parents": parents,

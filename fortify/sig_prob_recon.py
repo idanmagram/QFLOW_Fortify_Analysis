@@ -383,6 +383,7 @@ def populateSigProbs_recon_dp(signalNames, s_hat, s_hat_0, s_hat_1,
         order.extend(remaining)
     '''
     eff_ancestors = {}
+    primary_input_ancestors = {}
     atomic_set = set(inputSigBitNames) | set(refSigBitNames)
 
     known_ops = {"Cond", "Not", "Mix", "And", "Or", "Xor", "Eq", "NotEq",
@@ -533,6 +534,7 @@ def populateSigProbs_recon_dp(signalNames, s_hat, s_hat_0, s_hat_1,
         return expr
 
     _expr_cache = {}
+    _recon_dp_cache = {}
 
     def _expr_prob(expr, ref_name=None, ref_val=None):
         key = (_freeze_expr(expr), ref_name, ref_val)
@@ -541,6 +543,39 @@ def populateSigProbs_recon_dp(signalNames, s_hat, s_hat_0, s_hat_1,
             return _expr_cache[key]
         val = _expr_prob_uncached(expr, ref_name, ref_val)
         _expr_cache[key] = val
+        return val
+
+    def _recon_gate_prob_cached(op, a, b, z_vars, clamps, ref_name):
+        def _expand_temp_expr(x, seen=None):
+            if seen is None:
+                seen = set()
+            if isinstance(x, str) and x.startswith("__recon_tmp__"):
+                if x in seen:
+                    return x
+                seen.add(x)
+                ex = truthTableMap.get(x, x)
+                return _expand_temp_expr(ex, seen)
+            if isinstance(x, list):
+                return [x[0]] + [_expand_temp_expr(e, seen.copy()) for e in x[1:]]
+            return x
+
+        a_key_expr = _expand_temp_expr(a)
+        b_key_expr = _expand_temp_expr(b)
+        key = (
+            op,
+            _freeze_expr(a_key_expr),
+            _freeze_expr(b_key_expr),
+            tuple(z_vars),
+            tuple(sorted(clamps.items())) if clamps else (),
+            ref_name
+        )
+        if key in _recon_dp_cache:
+            return _recon_dp_cache[key]
+        val = gate_prob_recon_dp(
+            op, a, b, z_vars, truthTableMap, clamps,
+            atomic_set, s_hat, s_hat_0, s_hat_1, ref_name=ref_name
+        )
+        _recon_dp_cache[key] = val
         return val
 
     def _direct_inputs(expr):
@@ -564,14 +599,38 @@ def populateSigProbs_recon_dp(signalNames, s_hat, s_hat_0, s_hat_1,
             return {expr}
         return set()
 
+    def _primary_inputs(expr):
+
+        if isinstance(expr, int):
+            return set()
+        if '__recon_tmp__1823' in expr:
+            print("hi")
+        if isinstance(expr, str):
+            if expr in inputSigBitNames or expr.split("@", 1)[0] in inputSigBitNames:
+                return {expr}
+            if expr in primary_input_ancestors:
+                return set(primary_input_ancestors[expr])
+            if expr in truthTableMap:
+                return _primary_inputs(truthTableMap[expr])
+            return set()
+        if isinstance(expr, list):
+            result = set()
+            for ref in _extract_signal_names(expr):
+                result |= _primary_inputs(ref)
+            return result
+        return set()
+
     #print("all signals ", order)
     #return
     for sig in order:
         if sig in s_hat:
             if sig not in eff_ancestors:
                 eff_ancestors[sig] = {sig}
+            if sig not in primary_input_ancestors:
+                primary_input_ancestors[sig] = _primary_inputs(sig)
             continue
-
+        if sig == '__recon_tmp__1823':
+            print("lior")
         exp = truthTableMap.get(sig, None)
         if exp is None:
             #print("sig not in truthTableMap")
@@ -579,6 +638,7 @@ def populateSigProbs_recon_dp(signalNames, s_hat, s_hat_0, s_hat_1,
             s_hat_0[sig] = {ref: 0.5 for ref in refSigBitNames}
             s_hat_1[sig] = {ref: 0.5 for ref in refSigBitNames}
             eff_ancestors[sig] = {sig}
+            primary_input_ancestors[sig] = _primary_inputs(sig)
             atomic_set.add(sig)
             continue
 
@@ -588,6 +648,7 @@ def populateSigProbs_recon_dp(signalNames, s_hat, s_hat_0, s_hat_1,
             s_hat_0[sig] = {ref: val for ref in refSigBitNames}
             s_hat_1[sig] = {ref: val for ref in refSigBitNames}
             eff_ancestors[sig] = set()
+            #primary_input_ancestors[sig] = set()
             continue
 
         if isinstance(exp, str):
@@ -596,6 +657,7 @@ def populateSigProbs_recon_dp(signalNames, s_hat, s_hat_0, s_hat_1,
             s_hat_0[sig] = {ref: s_hat_0.get(exp, {}).get(ref, 0.5) for ref in refSigBitNames}
             s_hat_1[sig] = {ref: s_hat_1.get(exp, {}).get(ref, 0.5) for ref in refSigBitNames}
             eff_ancestors[sig] = eff_ancestors.get(exp, {exp})
+            primary_input_ancestors[sig] = _primary_inputs(exp)
             continue
 
         if isinstance(exp, list):
@@ -606,6 +668,7 @@ def populateSigProbs_recon_dp(signalNames, s_hat, s_hat_0, s_hat_1,
                 s_hat_0[sig] = {ref: _expr_prob(target, ref, 0) for ref in refSigBitNames}
                 s_hat_1[sig] = {ref: _expr_prob(target, ref, 1) for ref in refSigBitNames}
                 eff_ancestors[sig] = _direct_inputs(target)
+                primary_input_ancestors[sig] = _primary_inputs(target)
                 continue
 
             if op in binary_ops:
@@ -621,40 +684,39 @@ def populateSigProbs_recon_dp(signalNames, s_hat, s_hat_0, s_hat_1,
                         s_hat_1[sig] = {ref: 1.0 for ref in refSigBitNames}
                         eff_ancestors[sig] = {sig}
                         eff_ancestors[sig] = {sig}
+                      #  primary_input_ancestors[sig] = set()
                         atomic_set.add(sig)
                         continue
 
                 #if recon_only_set is not None:
                 #if recon_only_set is not None and shared and (sig in recon_only_set):
+                if sig == "top.TSC.beeps[0:0]@3":
+                    print("top.TSC.beeps[0:0]@3")
                 anc_a = eff_ancestors.get(a, _direct_inputs(a)) if isinstance(a, str) else _direct_inputs(a)
                 anc_b = eff_ancestors.get(b, _direct_inputs(b)) if isinstance(b, str) else _direct_inputs(b)
-                shared = anc_a & anc_b
+                pi_a = _primary_inputs(a)
+                pi_b = _primary_inputs(b)
+                shared = pi_a & pi_b
                 if (recon_only_set is not None) and (sig in recon_only_set) and shared:
-                #if shared:
-                    print("sig ", sig ," exp: ", exp, " anc_a ", anc_a, " anc_b ", anc_b, " shared ", shared)
+                    #pi_a = _primary_inputs(a)
+                    #pi_b = _primary_inputs(b)
+                    print("sssig ", sig, " exp: ", exp, " anc_a ", anc_a, " anc_b ", anc_b, " shared ", shared)
                     Z = sorted(shared)
-                    s_hat[sig] = gate_prob_recon_dp(
-                        op, a, b, Z, truthTableMap, {},
-                        atomic_set, s_hat, s_hat_0, s_hat_1, ref_name=None
-                    )
+                    s_hat[sig] = _recon_gate_prob_cached(op, a, b, Z, {}, None)
 
                     s_hat_0[sig] = {}
                     s_hat_1[sig] = {}
                     for ref in refSigBitNames:
                         z_eff = [z for z in Z if z != ref]
-                        s_hat_0[sig][ref] = gate_prob_recon_dp(
-                            op, a, b, z_eff, truthTableMap, {ref: 0},
-                            atomic_set, s_hat, s_hat_0, s_hat_1, ref_name=ref
-                        )
-                        s_hat_1[sig][ref] = gate_prob_recon_dp(
-                            op, a, b, z_eff, truthTableMap, {ref: 1},
-                            atomic_set, s_hat, s_hat_0, s_hat_1, ref_name=ref
-                        )
+                        s_hat_0[sig][ref] = _recon_gate_prob_cached(op, a, b, z_eff, {ref: 0}, ref)
+                        s_hat_1[sig][ref] = _recon_gate_prob_cached(op, a, b, z_eff, {ref: 1}, ref)
 
-                    if isinstance(sig, str) and sig.startswith("__recon_tmp__"):
-                        eff_ancestors[sig] = set(anc_a | anc_b)
-                    else:
-                        eff_ancestors[sig] = {sig}
+                    # Keep structural ancestors for downstream reconvergence detection.
+                    # Atomic handling is controlled separately by atomic_set.
+                    eff_ancestors[sig] = set(anc_a | anc_b)
+                    if sig == 'top.TSC.Baud8GeneratorACC[0:0]@1':
+                        print("lior")
+                    primary_input_ancestors[sig] = set(pi_a | pi_b)
                     #print("2eff_ancestors[sig] = ", eff_ancestors[sig], " of sig ", sig)
 
                     atomic_set.add(sig)
@@ -672,6 +734,9 @@ def populateSigProbs_recon_dp(signalNames, s_hat, s_hat_0, s_hat_1,
                     #    merged_anc = merged_anc[:3]
 
                     eff_ancestors[sig] = set(merged_anc)
+                    if sig == 'top.TSC.Baud8GeneratorACC[0:0]@1':
+                        print("lior")
+                    primary_input_ancestors[sig] = set(pi_a | pi_b)
                     #print("3eff_ancestors[sig] = ", eff_ancestors[sig], " of sig ", sig)
 
                 continue
@@ -683,6 +748,7 @@ def populateSigProbs_recon_dp(signalNames, s_hat, s_hat_0, s_hat_1,
                 s_hat_0[sig] = {ref: _expr_prob(exp, ref, 0) for ref in refSigBitNames}
                 s_hat_1[sig] = {ref: _expr_prob(exp, ref, 1) for ref in refSigBitNames}
                 eff_ancestors[sig] = c_anc
+                primary_input_ancestors[sig] = _primary_inputs(c)
                 #print("4eff_ancestors[sig] = ", eff_ancestors[sig]," of sig ",sig)
 
                 continue
@@ -691,6 +757,7 @@ def populateSigProbs_recon_dp(signalNames, s_hat, s_hat_0, s_hat_1,
             s_hat_0[sig] = {ref: _expr_prob(exp, ref, 0) for ref in refSigBitNames}
             s_hat_1[sig] = {ref: _expr_prob(exp, ref, 1) for ref in refSigBitNames}
             eff_ancestors[sig] = _direct_inputs(exp)
+            primary_input_ancestors[sig] = _primary_inputs(exp)
             #print("5eff_ancestors[sig] = ", eff_ancestors[sig], " of sig ", sig)
 
             continue
@@ -699,6 +766,7 @@ def populateSigProbs_recon_dp(signalNames, s_hat, s_hat_0, s_hat_1,
         s_hat_0[sig] = {ref: 0.5 for ref in refSigBitNames}
         s_hat_1[sig] = {ref: 0.5 for ref in refSigBitNames}
         eff_ancestors[sig] = {sig}
+        primary_input_ancestors[sig] = _primary_inputs(sig)
         atomic_set.add(sig)
 
 
@@ -720,6 +788,7 @@ def populateSigProbs_recon_dp_parallel(signalNames, s_hat, s_hat_0, s_hat_1,
     levels = graph_artifacts.get("levels", [[s] for s in graph_artifacts["order"]])
 
     eff_ancestors = {}
+    primary_input_ancestors = {}
     atomic_set = set(inputSigBitNames) | set(refSigBitNames)
     known_ops = {"Cond", "Not", "Mix", "And", "Or", "Xor", "Eq", "NotEq",
                  "Nand", "Nor", "Srl", "Sll", "Plus", "Times", "Minus",
@@ -736,6 +805,25 @@ def populateSigProbs_recon_dp_parallel(signalNames, s_hat, s_hat_0, s_hat_1,
             if op not in known_ops:
                 return _direct_inputs(op)
             return _extract_signal_names(expr)
+        return set()
+
+    def _primary_inputs(expr, pi_snapshot=None):
+        snapshot = primary_input_ancestors if pi_snapshot is None else pi_snapshot
+        if isinstance(expr, int):
+            return set()
+        if isinstance(expr, str):
+            if expr in inputSigBitNames or expr.split("@", 1)[0] in inputSigBitNames:
+                return {expr}
+            if expr in snapshot:
+                return set(snapshot[expr])
+            if expr in truthTableMap:
+                return _primary_inputs(truthTableMap[expr], pi_snapshot=snapshot)
+            return set()
+        if isinstance(expr, list):
+            result = set()
+            for ref in _extract_signal_names(expr):
+                result |= _primary_inputs(ref, pi_snapshot=snapshot)
+            return result
         return set()
 
     def _is_input_reachable(bit_name):
@@ -788,7 +876,7 @@ def populateSigProbs_recon_dp_parallel(signalNames, s_hat, s_hat_0, s_hat_1,
             return False
         return False
 
-    def _compute_one(sig, atomic_snapshot, eff_snapshot):
+    def _compute_one(sig, atomic_snapshot, eff_snapshot, pi_snapshot):
         if sig in s_hat:
             return None
 
@@ -800,6 +888,7 @@ def populateSigProbs_recon_dp_parallel(signalNames, s_hat, s_hat_0, s_hat_1,
                 "p0": {ref: 0.5 for ref in refSigBitNames},
                 "p1": {ref: 0.5 for ref in refSigBitNames},
                 "anc": {sig},
+                "pi_anc": _primary_inputs(sig, pi_snapshot=pi_snapshot),
                 "add_atomic": True,
             }
 
@@ -811,6 +900,7 @@ def populateSigProbs_recon_dp_parallel(signalNames, s_hat, s_hat_0, s_hat_1,
                 "p0": {ref: val for ref in refSigBitNames},
                 "p1": {ref: val for ref in refSigBitNames},
                 "anc": set(),
+                "pi_anc": set(),
                 "add_atomic": False,
             }
 
@@ -821,6 +911,7 @@ def populateSigProbs_recon_dp_parallel(signalNames, s_hat, s_hat_0, s_hat_1,
                 "p0": {ref: s_hat_0.get(exp, {}).get(ref, 0.5) for ref in refSigBitNames},
                 "p1": {ref: s_hat_1.get(exp, {}).get(ref, 0.5) for ref in refSigBitNames},
                 "anc": eff_snapshot.get(exp, {exp}),
+                "pi_anc": _primary_inputs(exp, pi_snapshot=pi_snapshot),
                 "add_atomic": False,
             }
 
@@ -842,12 +933,15 @@ def populateSigProbs_recon_dp_parallel(signalNames, s_hat, s_hat_0, s_hat_1,
                             "p0": {ref: 1.0 for ref in refSigBitNames},
                             "p1": {ref: 1.0 for ref in refSigBitNames},
                             "anc": {sig},
+                            "pi_anc": set(),
                             "add_atomic": True,
                         }
 
                 anc_a = eff_snapshot.get(a, _direct_inputs(a)) if isinstance(a, str) else _direct_inputs(a)
                 anc_b = eff_snapshot.get(b, _direct_inputs(b)) if isinstance(b, str) else _direct_inputs(b)
-                shared = anc_a & anc_b
+                pi_a = _primary_inputs(a, pi_snapshot=pi_snapshot)
+                pi_b = _primary_inputs(b, pi_snapshot=pi_snapshot)
+                shared = pi_a & pi_b
 
                 if (recon_only_set is not None) and (sig in recon_only_set) and shared:
                     Z = sorted(shared)
@@ -867,13 +961,13 @@ def populateSigProbs_recon_dp_parallel(signalNames, s_hat, s_hat_0, s_hat_1,
                             op, a, b, z_eff, truthTableMap, {ref: 1},
                             atomic_snapshot, s_hat, s_hat_0, s_hat_1, ref_name=ref
                         )
-                    anc_out = set(anc_a | anc_b) if (isinstance(sig, str) and sig.startswith("__recon_tmp__")) else {sig}
                     return {
                         "sig": sig,
                         "p": p,
                         "p0": p0,
                         "p1": p1,
-                        "anc": anc_out,
+                        "anc": set(anc_a | anc_b),
+                        "pi_anc": set(pi_a | pi_b),
                         "add_atomic": True,
                     }
 
@@ -895,6 +989,7 @@ def populateSigProbs_recon_dp_parallel(signalNames, s_hat, s_hat_0, s_hat_1,
                     "p0": p0,
                     "p1": p1,
                     "anc": set(anc_a | anc_b),
+                    "pi_anc": set(pi_a | pi_b),
                     "add_atomic": False,
                 }
 
@@ -916,6 +1011,7 @@ def populateSigProbs_recon_dp_parallel(signalNames, s_hat, s_hat_0, s_hat_1,
                 "p0": p0,
                 "p1": p1,
                 "anc": _direct_inputs(exp),
+                "pi_anc": _primary_inputs(exp, pi_snapshot=pi_snapshot),
                 "add_atomic": False,
             }
 
@@ -925,13 +1021,14 @@ def populateSigProbs_recon_dp_parallel(signalNames, s_hat, s_hat_0, s_hat_1,
             "p0": {ref: 0.5 for ref in refSigBitNames},
             "p1": {ref: 0.5 for ref in refSigBitNames},
             "anc": {sig},
+            "pi_anc": _primary_inputs(sig, pi_snapshot=pi_snapshot),
             "add_atomic": True,
         }
 
-    def _compute_chunk(sig_chunk, atomic_snapshot, eff_snapshot):
+    def _compute_chunk(sig_chunk, atomic_snapshot, eff_snapshot, pi_snapshot):
         out = {}
         for sig in sig_chunk:
-            res = _compute_one(sig, atomic_snapshot, eff_snapshot)
+            res = _compute_one(sig, atomic_snapshot, eff_snapshot, pi_snapshot)
             if res is not None:
                 out[sig] = res
         return out
@@ -948,18 +1045,19 @@ def populateSigProbs_recon_dp_parallel(signalNames, s_hat, s_hat_0, s_hat_1,
 
             atomic_snapshot = set(atomic_set)
             eff_snapshot = dict(eff_ancestors)
+            pi_snapshot = dict(primary_input_ancestors)
             computed = {}
 
             # Small levels are cheaper to run serially.
             if len(pending) < max(min_parallel_level_size, chunk_size):
                 for sig in pending:
-                    res = _compute_one(sig, atomic_snapshot, eff_snapshot)
+                    res = _compute_one(sig, atomic_snapshot, eff_snapshot, pi_snapshot)
                     if res is not None:
                         computed[sig] = res
             else:
                 chunks = [pending[i:i + chunk_size] for i in range(0, len(pending), chunk_size)]
                 future_map = {
-                    executor.submit(_compute_chunk, c, atomic_snapshot, eff_snapshot): idx
+                    executor.submit(_compute_chunk, c, atomic_snapshot, eff_snapshot, pi_snapshot): idx
                     for idx, c in enumerate(chunks)
                 }
                 if debug:
@@ -977,6 +1075,7 @@ def populateSigProbs_recon_dp_parallel(signalNames, s_hat, s_hat_0, s_hat_1,
                 s_hat_0[sig] = res["p0"]
                 s_hat_1[sig] = res["p1"]
                 eff_ancestors[sig] = res["anc"]
+                primary_input_ancestors[sig] = res["pi_anc"]
                 if res["add_atomic"]:
                     atomic_set.add(sig)
 

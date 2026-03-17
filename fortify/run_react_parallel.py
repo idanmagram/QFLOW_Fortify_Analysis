@@ -257,7 +257,7 @@ def main(input_file_path, top_module_name, ref_module_name, ref_instance_name,
     # time-unroll for looped signals
     truthTableMap, signalNames_unrolled = module_maps.build_time_unrolled_truth_table(truthTableMap, UNROLL_DEPTH)
     # Lower nested expressions so reconvergence is visible at each merge node.
-    truthTableMap = sig_prob_recon.lower_truth_table_map(truthTableMap)
+    # truthTableMap = sig_prob_recon.lower_truth_table_map(truthTableMap)
 
     # time-index reference bits (treated as looped secrets)
     refSigBitNames = []

@@ -200,7 +200,7 @@ def main(input_file_path, top_module_name, ref_module_name, ref_instance_name,
     truthTableMap, signalNames_unrolled = module_maps.build_time_unrolled_truth_table(truthTableMap, UNROLL_DEPTH)
     # Lower nested expressions into named intermediates so reconvergence is
     # visible at every merge node.
-    truthTableMap = sig_prob_recon.lower_truth_table_map(truthTableMap)
+    # truthTableMap = sig_prob_recon.lower_truth_table_map(truthTableMap)
 
     # time-index reference bits (treated as looped secrets)
     refSigBitNames = []
@@ -350,7 +350,7 @@ def main(input_file_path, top_module_name, ref_module_name, ref_instance_name,
 
         # Pass 2: recompute only the recon subgraph and keep Pass-1 values outside it.
         # This avoids recalculating unaffected nodes.
-        print("Pass 2")
+        print("Pass 22")
         for sig in recon_only_set:
             s_hat.pop(sig, None)
             s_hat_0.pop(sig, None)
