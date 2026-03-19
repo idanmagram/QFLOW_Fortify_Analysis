@@ -16,7 +16,7 @@ from typing import Dict, Tuple, Set
 def extract_leaky_outputs(
     results: Dict[Tuple[str, str], Dict[str, float]],
     leakage_threshold: float = 1.0,
-    top_k_per_base: int = 3,
+    top_k_per_base: int = 1,
 ) -> Set[str]:
     """Return leaky outputs, keeping top-k per base signal (ignoring @time)."""
 
