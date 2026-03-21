@@ -69,8 +69,8 @@ def incSigProb(a, b, op):
     elif op == "Or":
         return a + b - a * b
     elif op == "Xor":
-        #return a + b - 2.0 * a * b
-        return a + b - a * b
+        return a + b - 2.0 * a * b
+        #return a + b - a * b
     elif op == "Eq":
         return a * b + (1.0 - a) * (1.0 - b)
     elif op == "Noteq":

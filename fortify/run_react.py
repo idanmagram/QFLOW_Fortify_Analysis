@@ -5,6 +5,7 @@ from collections import defaultdict
 import module_maps
 import os
 import sig_prob_recon
+import sig_prob_recon_t
 from tqdm import tqdm
 import time
 from datetime import datetime
@@ -39,97 +40,59 @@ def estimate_c_and_pbv_from_conditional_probs(s_hat_0, s_hat_1, s_hat,
             if ref not in s_hat_0[sig] or ref not in s_hat_1[sig]:
                 continue
 
-            p_y1_h0 = s_hat_0[sig][ref]
-            p_y1_h1 = s_hat_1[sig][ref]
+            # ----------------------------------
+            # 1. Input probabilities
+            # ----------------------------------
 
-            # channel probabilities
-            channel_C[0][1] = p_y1_h0
-            channel_C[0][0] = 1 - p_y1_h0
-            channel_C[1][1] = p_y1_h1
-            channel_C[1][0] = 1 - p_y1_h1
+            p1_if_0 = s_hat_0[sig][ref]  # P(signal=1 | secret=0)
+            p1_if_1 = s_hat_1[sig][ref]  # P(signal=1 | secret=1)
 
-            prior_0 = s_hat.get(ref, 0.5)
-            prior_1 = 1 - prior_0
+            p_secret_1 = s_hat.get(ref, 0.5)
+            p_secret_0 = 1 - p_secret_1
 
-            # joint distribution
-            for y in [0,1]:
-                joint_J[y][0] = prior_0 * channel_C[0][y]
-                joint_J[y][1] = prior_1 * channel_C[1][y]
+            # ----------------------------------
+            # 2. Joint probabilities
+            # ----------------------------------
 
-            # -----------------------------
-            # PBV (what you already compute)
-            # -----------------------------
+            # signal = 0
+            p_s0_h0 = p_secret_0 * (1 - p1_if_0)
+            p_s0_h1 = p_secret_1 * (1 - p1_if_1)
 
-            pbv = sum(max(joint_J[y][0], joint_J[y][1]) for y in [0,1])
-            leakage_pbv = pbv / max(prior_0, prior_1)
+            # signal = 1
+            p_s1_h0 = p_secret_0 * p1_if_0
+            p_s1_h1 = p_secret_1 * p1_if_1
+
+            # ----------------------------------
+            # 3. Prior (before seeing signal)
+            # ----------------------------------
+
+            prior = max(p_secret_0, p_secret_1)
+
+            # ----------------------------------
+            # 4. Posterior (after seeing signal)
+            # ----------------------------------
+
+            # attacker picks best guess per observation
+            best_if_s0 = max(p_s0_h0, p_s0_h1)
+            best_if_s1 = max(p_s1_h0, p_s1_h1)
+
+            pbv = best_if_s0 + best_if_s1
+
+            # ----------------------------------
+            # 5. Leakage
+            # ----------------------------------
+
+            leakage_pbv = pbv / prior
 
             # -----------------------------
             # Posterior probabilities
             # -----------------------------
 
-            denom1 = p_y1_h0 + p_y1_h1
-            denom0 = (1 - p_y1_h0) + (1 - p_y1_h1)
 
-            if denom1 > 0:
-                p_s1_y1 = p_y1_h1 / denom1
-            else:
-                p_s1_y1 = 0.5
-
-            if denom0 > 0:
-                p_s1_y0 = (1 - p_y1_h1) / denom0
-            else:
-                p_s1_y0 = 0.5
-
-            # -----------------------------
-            # Posterior gap (strong simple metric)
-            # -----------------------------
-
-            posterior_gap = abs(p_s1_y1 - p_s1_y0)
-
-            # -----------------------------
-            # Mutual information
-            # -----------------------------
-
-            def h(x):
-                if x <= 0 or x >= 1:
-                    return 0
-                return -(x*math.log2(x) + (1-x)*math.log2(1-x))
-
-            q = prior_0*p_y1_h0 + prior_1*p_y1_h1
-
-            mutual_info = h(q) - prior_0*h(p_y1_h0) - prior_1*h(p_y1_h1)
-
-            # -----------------------------
-            # Likelihood ratio (rare-event sensitive)
-            # -----------------------------
-
-            eps = 1e-15
-            lr1 = (p_y1_h1 + eps) / (p_y1_h0 + eps)
-            lr0 = ((1-p_y1_h1) + eps) / ((1-p_y1_h0) + eps)
-
-            log_lr_gap = abs(math.log(lr1) - math.log(lr0))
-            log_lr_gap = math.tanh(log_lr_gap / 2)
-
-            # -----------------------------
-            # Log-odds gap of posteriors
-            # -----------------------------
-
-            def logit(x):
-                x = min(max(x, 1e-12), 1-1e-12)
-                return math.log(x/(1-x))
-
-            logit_gap = abs(logit(p_s1_y1) - logit(p_s1_y0))
 
             results[(sig,ref)] = {
                 'PBV': pbv,
-                'Leakage_PBV': leakage_pbv,
-                'Posterior_gap': posterior_gap,
-                'Logit_gap': logit_gap,
-                'Log_LR_gap': log_lr_gap,
-                'Mutual_information': mutual_info,
-                'Posterior_Y1': p_s1_y1,
-                'Posterior_Y0': p_s1_y0,
-                'prior': max(prior_0, prior_1)
+                'Leakage_PBV': leakage_pbv
             }
 
     return results
@@ -181,7 +144,7 @@ def estimate_c_and_pbv_from_conditional_probs1(s_hat_0, s_hat_1, s_hat,
 
 def main(input_file_path, top_module_name, ref_module_name, ref_instance_name,
          ref_sig_name, ref_sig_width, design, leaks_file_path, time_file_path,
-         reconvergence_aware=False, subgraph_path=None):
+         reconvergence_aware=False, subgraph_path=None, reconvergence_algorithm="dp"):
     startTime = time.time()
 
     print("\n ******************************************************************")
@@ -296,6 +259,10 @@ def main(input_file_path, top_module_name, ref_module_name, ref_instance_name,
 
     if reconvergence_aware:
         print("Reconvergance aware calculation")
+        recon_populate_fn = sig_prob_recon.populateSigProbs_recon_dp
+        if reconvergence_algorithm == "t":
+            recon_populate_fn = sig_prob_recon_t.populateSigProbs_recon_t
+
         loaded_subgraph = None
         if subgraph_path:
             try:
@@ -309,7 +276,7 @@ def main(input_file_path, top_module_name, ref_module_name, ref_instance_name,
         if loaded_subgraph is None:
             print("Pass 1")
             # Pass 1: full graph probabilities to identify leaky outputs.
-            sig_prob_recon.populateSigProbs_recon_dp(
+            recon_populate_fn(
                 signalNames, s_hat, s_hat_0, s_hat_1,
                 truthTableMap, refSigBitNames, inputSigBitNames, sigWidths,
                 graph_artifacts=graph_artifacts
@@ -356,7 +323,7 @@ def main(input_file_path, top_module_name, ref_module_name, ref_instance_name,
             s_hat_0.pop(sig, None)
             s_hat_1.pop(sig, None)
         _init_prob_tables_second_pass(s_hat, s_hat_0, s_hat_1)
-        sig_prob_recon.populateSigProbs_recon_dp(
+        recon_populate_fn(
             signalNames, s_hat, s_hat_0, s_hat_1,
             truthTableMap, refSigBitNames, inputSigBitNames, sigWidths,
             recon_only_set=recon_only_set, graph_artifacts=graph_artifacts
@@ -408,7 +375,6 @@ def main(input_file_path, top_module_name, ref_module_name, ref_instance_name,
     for (sig, ref), metrics in top_150:
         print(
             f"Signal: {sig}, Ref: {ref}, "
-            f"Log_LR_gap: {metrics['Log_LR_gap']:.15f}, "
             f"Leakage_PBV: {metrics['Leakage_PBV']:.15f}")
     print()
     endTime = time.time()
@@ -433,6 +399,9 @@ if __name__ == '__main__':
     my_parser.add_argument('Design',          metavar='design',            type=str)
     my_parser.add_argument('--reconvergence-aware', action='store_true',
                            help='enable reconvergence cone DP (collapse cones once resolved)')
+    my_parser.add_argument('--reconvergence-algorithm', type=str, default='dp',
+                           choices=['dp', 't'],
+                           help='reconvergence algorithm to use with --reconvergence-aware')
     my_parser.add_argument('--subgraph-path', type=str, action='store',
                            help='path to subgraph nodes (one per line) to limit reconvergence')
     my_parser.add_argument('-r', '--results-path', type=str, action='store',
@@ -464,5 +433,7 @@ if __name__ == '__main__':
     main(args.InputFilePath, args.TopModuleName,
          args.RefModuleName, args.RefInstanceName,
          args.RefSigName, args.RefSigWidth, args.Design, leaks_file_path, time_file_path,
-         reconvergence_aware=args.reconvergence_aware, subgraph_path=args.subgraph_path)
+         reconvergence_aware=args.reconvergence_aware,
+         subgraph_path=args.subgraph_path,
+         reconvergence_algorithm=args.reconvergence_algorithm)
     print("Runtime:", time.time() - start, "seconds")
