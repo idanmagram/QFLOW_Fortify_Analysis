@@ -20,10 +20,8 @@ sys.setrecursionlimit(100000)
 def estimate_c_and_pbv_from_conditional_probs(s_hat_0, s_hat_1, s_hat,
                                               refSigBitNames, signalNames,
                                               target_signals=None):
-
-    channel_C = defaultdict(lambda: defaultdict(float))
-    joint_J   = defaultdict(lambda: defaultdict(float))
-    results   = {}
+    per_output_results = {}
+    max_per_secret_results = {}
 
     signals_to_check = target_signals if target_signals is not None else signalNames
 
@@ -90,12 +88,38 @@ def estimate_c_and_pbv_from_conditional_probs(s_hat_0, s_hat_1, s_hat,
 
 
 
-            results[(sig,ref)] = {
+            per_output_results[(sig,ref)] = {
                 'PBV': pbv,
-                'Leakage_PBV': leakage_pbv
+                'Leakage_PBV': leakage_pbv,
+                'prior': prior,
             }
 
-    return results
+    for ref in refSigBitNames:
+        ref_metrics = [
+            (sig, metrics)
+            for (sig, metric_ref), metrics in per_output_results.items()
+            if metric_ref == ref
+        ]
+        if not ref_metrics:
+            continue
+
+        max_sig, max_metrics = max(
+            ref_metrics,
+            key=lambda item: item[1]['Leakage_PBV']
+        )
+        max_per_secret_results[ref] = {
+            'Leakage_PBV': max_metrics['Leakage_PBV'],
+            'PBV': max_metrics['PBV'],
+            'prior': max_metrics['prior'],
+            'argmax_output': max_sig,
+            'num_outputs': len(ref_metrics),
+            'summary': 'max_per_output_leakage',
+        }
+
+    return {
+        'per_output': per_output_results,
+        'max_per_secret': max_per_secret_results,
+    }
 
 def estimate_c_and_pbv_from_conditional_probs1(s_hat_0, s_hat_1, s_hat,
                                               refSigBitNames, signalNames, target_signals=None):
@@ -285,12 +309,14 @@ def main(input_file_path, top_module_name, ref_module_name, ref_instance_name,
                 s_hat_0, s_hat_1, s_hat, refSigBitNames, signalNames,
                 target_signals=outputSigBitNames)
 
-            leaky_outputs = extract_leaky_outputs(first_pass_results, leakage_threshold=1.0)
+            leaky_outputs = extract_leaky_outputs(
+                first_pass_results['per_output'], leakage_threshold=1.0
+            )
             recon_only_set = extract_sub_recon_graph(
                 truth_table_map=truthTableMap,
                 ref_sig_bit_names=refSigBitNames,
                 signal_names=signalNames,
-                results=first_pass_results,
+                results=first_pass_results['per_output'],
                 leaky_outputs=leaky_outputs,
                 leakage_threshold=1.0,
                 unroll_depth=UNROLL_DEPTH,
@@ -352,6 +378,8 @@ def main(input_file_path, top_module_name, ref_module_name, ref_instance_name,
 
     results = estimate_c_and_pbv_from_conditional_probs(
         s_hat_0, s_hat_1, s_hat, refSigBitNames, signalNames, target_signals=outputSigBitNames)
+    per_output_results = results['per_output']
+    max_per_secret_results = results['max_per_secret']
     # aggregate per base signal/ref (max over time slices)
 
     '''
@@ -363,7 +391,7 @@ def main(input_file_path, top_module_name, ref_module_name, ref_instance_name,
     '''
 
     aggregated = {}
-    for (sig, ref), metrics in results.items():
+    for (sig, ref), metrics in per_output_results.items():
         base_sig = sig.split("@")[0]
         base_ref = ref.split("@")[0]
         key = (base_sig, base_ref)
@@ -376,6 +404,22 @@ def main(input_file_path, top_module_name, ref_module_name, ref_instance_name,
         print(
             f"Signal: {sig}, Ref: {ref}, "
             f"Leakage_PBV: {metrics['Leakage_PBV']:.15f}")
+
+    print("\nL_max(H) across all selected outputs:\n")
+    sorted_max_per_secret = sorted(
+        (
+            (ref, metrics)
+            for ref, metrics in max_per_secret_results.items()
+            if metrics['Leakage_PBV'] > 1.0
+        ),
+        key=lambda item: item[1]['Leakage_PBV'],
+        reverse=True,
+    )
+    for ref, metrics in sorted_max_per_secret:
+        print(
+            f"Ref: {ref}, L_max: {metrics['Leakage_PBV']:.15f}, "
+            f"argmax_output: {metrics['argmax_output']}"
+        )
     print()
     endTime = time.time()
     print("Total time taken: {:.4f}s".format(endTime - startTime))
