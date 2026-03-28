@@ -69,8 +69,8 @@ def incSigProb(a, b, op):
     elif op == "Or":
         return a + b - a * b
     elif op == "Xor":
-        return a + b - 2.0 * a * b
         #return a + b - a * b
+        return a + b - 2 * a * b
     elif op == "Eq":
         return a * b + (1.0 - a) * (1.0 - b)
     elif op == "Noteq":
@@ -632,6 +632,8 @@ def populateSigProbs_recon_dp(signalNames, s_hat, s_hat_0, s_hat_1,
         return p, p0, p1
 
     def _compute_signal_result(sig):
+        if sig == 'top.AES.a1.X_v1.o[0:0]':
+            print("hi")
         exp = truthTableMap.get(sig, None)
         if exp is None:
             return 0.5, {ref: 0.5 for ref in refSigBitNames}, {ref: 0.5 for ref in refSigBitNames}, True

@@ -1,6 +1,7 @@
 import math
 import sys
 import argparse
+import random
 from collections import defaultdict
 import module_maps
 import os
@@ -17,6 +18,14 @@ UNROLL_DEPTH = 32
 
 sys.setrecursionlimit(100000)
 
+
+def _get_cached_uniform(cache, key):
+    if key not in cache:
+        #cache[key] = random.uniform(0.5, 0.5)
+        #cache[key] = random.uniform([0.1, 0.9])
+        cache[key] = random.choice([0.0, 1.0])
+    return cache[key]
+
 def estimate_c_and_pbv_from_conditional_probs(s_hat_0, s_hat_1, s_hat,
                                               refSigBitNames, signalNames,
                                               target_signals=None):
@@ -24,6 +33,8 @@ def estimate_c_and_pbv_from_conditional_probs(s_hat_0, s_hat_1, s_hat,
     max_per_secret_results = {}
 
     signals_to_check = target_signals if target_signals is not None else signalNames
+    #print("\n[DEBUG] estimate_c_and_pbv_from_conditional_probs")
+    #print(f"[DEBUG] signals_to_check={len(signals_to_check)} refs={len(refSigBitNames)}")
 
     for sig in signals_to_check:
         if not isinstance(sig, str):
@@ -45,20 +56,27 @@ def estimate_c_and_pbv_from_conditional_probs(s_hat_0, s_hat_1, s_hat,
             p1_if_0 = s_hat_0[sig][ref]  # P(signal=1 | secret=0)
             p1_if_1 = s_hat_1[sig][ref]  # P(signal=1 | secret=1)
 
-            p_secret_1 = s_hat.get(ref, 0.5)
+            #p_secret_1 = s_hat.get(ref, 0.5)
+            p_secret_1 = 0.5
             p_secret_0 = 1 - p_secret_1
 
-            # ----------------------------------
-            # 2. Joint probabilities
-            # ----------------------------------
-
-            # signal = 0
+            # Joint probabilities P(Y=y, H=h) from P(H=h) * P(Y=y | H=h).
+            # Here Y is the observed signal bit and H is the reference/secret bit.
+            # signal = 0: P(Y=0, H=0) and P(Y=0, H=1)
             p_s0_h0 = p_secret_0 * (1 - p1_if_0)
             p_s0_h1 = p_secret_1 * (1 - p1_if_1)
+            print(
+                f"[DEBUG] joint y=0 sig={sig} ref={ref} "
+                f"p_s0_h0={p_s0_h0:.15f} p_s0_h1={p_s0_h1:.15f}"
+            )
 
-            # signal = 1
+            # signal = 1: P(Y=1, H=0) and P(Y=1, H=1)
             p_s1_h0 = p_secret_0 * p1_if_0
             p_s1_h1 = p_secret_1 * p1_if_1
+            print(
+                f"[DEBUG] joint y=1 sig={sig} ref={ref} "
+                f"p_s1_h0={p_s1_h0:.15f} p_s1_h1={p_s1_h1:.15f}"
+            )
 
             # ----------------------------------
             # 3. Prior (before seeing signal)
@@ -73,6 +91,10 @@ def estimate_c_and_pbv_from_conditional_probs(s_hat_0, s_hat_1, s_hat,
             # attacker picks best guess per observation
             best_if_s0 = max(p_s0_h0, p_s0_h1)
             best_if_s1 = max(p_s1_h0, p_s1_h1)
+            print(
+                f"[DEBUG] posterior-best sig={sig} ref={ref} "
+                f"best_if_s0={best_if_s0:.15f} best_if_s1={best_if_s1:.15f}"
+            )
 
             pbv = best_if_s0 + best_if_s1
 
@@ -82,17 +104,16 @@ def estimate_c_and_pbv_from_conditional_probs(s_hat_0, s_hat_1, s_hat,
 
             leakage_pbv = pbv / prior
 
-            # -----------------------------
-            # Posterior probabilities
-            # -----------------------------
-
-
-
             per_output_results[(sig,ref)] = {
                 'PBV': pbv,
                 'Leakage_PBV': leakage_pbv,
                 'prior': prior,
             }
+
+            print(
+                f"pbv={pbv:.15f} leakage={leakage_pbv:.15f}"
+            )
+
 
     for ref in refSigBitNames:
         ref_metrics = [
@@ -115,6 +136,11 @@ def estimate_c_and_pbv_from_conditional_probs(s_hat_0, s_hat_1, s_hat,
             'num_outputs': len(ref_metrics),
             'summary': 'max_per_output_leakage',
         }
+        print(
+            f"[DEBUG] ref={ref} "
+            f"l_max={max_metrics['Leakage_PBV']:.15f} "
+            f"argmax_output={max_sig} num_outputs={len(ref_metrics)}"
+        )
 
     return {
         'per_output': per_output_results,
@@ -206,15 +232,18 @@ def main(input_file_path, top_module_name, ref_module_name, ref_instance_name,
         inputSigBitNames.extend([f'{inp}[{i}:{i}]' for i in range(wid)])
 
     graph_artifacts = build_recon_graph_artifacts(signalNames, truthTableMap)
+    input_prior_cache = {}
+    ref_prior_cache = {}
+    ref_conditional_cache = {}
 
     def _init_prob_tables_second_pass(s_hat, s_hat_0, s_hat_1):
 
         # initialise priors for input bits
         for sig in inputSigBitNames:
-            base = sig.split("@")[0]
-            s_hat[sig] = 0.5
-            s_hat_0[sig] = {ref: 0.5 for ref in refSigBitNames}
-            s_hat_1[sig] = {ref: 0.5 for ref in refSigBitNames}
+            prior = _get_cached_uniform(input_prior_cache, sig)
+            s_hat[sig] = prior
+            s_hat_0[sig] = {ref: prior for ref in refSigBitNames}
+            s_hat_1[sig] = {ref: prior for ref in refSigBitNames}
             if "rst" in sig:
                 s_hat[sig] = 0.1
                 s_hat_0[sig] = {ref: 0.1 for ref in refSigBitNames}
@@ -227,8 +256,9 @@ def main(input_file_path, top_module_name, ref_module_name, ref_instance_name,
                 s_hat_0[sig] = {}
                 s_hat_1[sig] = {}
                 for ref in refSigBitNames:
-                    s_hat_0[sig][ref] = 0.5
-                    s_hat_1[sig][ref] = 0.5
+                    conditional_prior = 0.5
+                    s_hat_0[sig][ref] = conditional_prior
+                    s_hat_1[sig][ref] = conditional_prior
                     if ref == sig:
                         s_hat_0[sig][ref] = 0.0
                         s_hat_1[sig][ref] = 1.0
@@ -242,10 +272,10 @@ def main(input_file_path, top_module_name, ref_module_name, ref_instance_name,
 
         # initialise priors for input bits
         for sig in inputSigBitNames:
-            base = sig.split("@")[0]
-            s_hat[sig] = 0.5
-            s_hat_0[sig] = {ref: 0.5 for ref in refSigBitNames}
-            s_hat_1[sig] = {ref: 0.5 for ref in refSigBitNames}
+            prior = _get_cached_uniform(input_prior_cache, sig)
+            s_hat[sig] = prior
+            s_hat_0[sig] = {ref: prior for ref in refSigBitNames}
+            s_hat_1[sig] = {ref: prior for ref in refSigBitNames}
             if "rst" in sig:
                 s_hat[sig] = 0.1
                 s_hat_0[sig] = {ref: 0.1 for ref in refSigBitNames}
@@ -258,8 +288,9 @@ def main(input_file_path, top_module_name, ref_module_name, ref_instance_name,
                 s_hat_0[sig] = {}
                 s_hat_1[sig] = {}
                 for ref in refSigBitNames:
-                    s_hat_0[sig][ref] = 0.5
-                    s_hat_1[sig][ref] = 0.5
+                    conditional_prior = 0.5
+                    s_hat_0[sig][ref] = conditional_prior
+                    s_hat_1[sig][ref] = conditional_prior
                     if ref == sig:
                         s_hat_0[sig][ref] = 0.0
                         s_hat_1[sig][ref] = 1.0
@@ -280,6 +311,23 @@ def main(input_file_path, top_module_name, ref_module_name, ref_instance_name,
                 outputSigBitNames.append(f"{top_module_name}.{oname}[{i}:{i}]")
                 for t in range(UNROLL_DEPTH + 1):
                     outputSigBitNames.append(f"{top_module_name}.{oname}[{i}:{i}]@{t}")
+
+    def _print_top_150_leakage(per_output_results, title):
+        aggregated = {}
+        for (sig, ref), metrics in per_output_results.items():
+            base_sig = sig.split("@")[0]
+            base_ref = ref.split("@")[0]
+            key = (base_sig, base_ref)
+            if key not in aggregated or metrics['Leakage_PBV'] > aggregated[key]['Leakage_PBV']:
+                aggregated[key] = metrics
+
+        top_150 = sorted(aggregated.items(), key=lambda x: x[1]['Leakage_PBV'], reverse=True)[:150]
+        print(f"\n{title}\n")
+        for (sig, ref), metrics in top_150:
+            print(
+                f"Signal: {sig}, Ref: {ref}, "
+                f"Leakage_PBV: {metrics['Leakage_PBV']:.25f}"
+            )
 
     if reconvergence_aware:
         print("Reconvergance aware calculation")
@@ -308,6 +356,10 @@ def main(input_file_path, top_module_name, ref_module_name, ref_instance_name,
             first_pass_results = estimate_c_and_pbv_from_conditional_probs(
                 s_hat_0, s_hat_1, s_hat, refSigBitNames, signalNames,
                 target_signals=outputSigBitNames)
+            _print_top_150_leakage(
+                first_pass_results['per_output'],
+                "Top 150 signals with highest leakage after first pass:"
+            )
 
             leaky_outputs = extract_leaky_outputs(
                 first_pass_results['per_output'], leakage_threshold=1.0
@@ -390,20 +442,7 @@ def main(input_file_path, top_module_name, ref_module_name, ref_instance_name,
         print(f"Signal: {sig}, Ref: {ref}, "f"Leakage: {metrics['Leakage']:.15f}, PBV: {metrics['PBV']:.15f}")
     '''
 
-    aggregated = {}
-    for (sig, ref), metrics in per_output_results.items():
-        base_sig = sig.split("@")[0]
-        base_ref = ref.split("@")[0]
-        key = (base_sig, base_ref)
-        if key not in aggregated or metrics['Leakage_PBV'] > aggregated[key]['Leakage_PBV']:
-            aggregated[key] = metrics
-
-    top_150 = sorted(aggregated.items(),key=lambda x: x[1]['Leakage_PBV'],reverse=True)[:150]
-    print("\nTop 150 signals with highest leakage:\n")
-    for (sig, ref), metrics in top_150:
-        print(
-            f"Signal: {sig}, Ref: {ref}, "
-            f"Leakage_PBV: {metrics['Leakage_PBV']:.15f}")
+    _print_top_150_leakage(per_output_results, "Top 150 signals with highest leakage:")
 
     print("\nL_max(H) across all selected outputs:\n")
     sorted_max_per_secret = sorted(
