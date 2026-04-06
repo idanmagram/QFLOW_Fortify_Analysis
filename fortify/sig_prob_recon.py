@@ -667,7 +667,7 @@ def populateSigProbs_recon_dp(signalNames, s_hat, s_hat_0, s_hat_1,
                         return 1.0, {ref: 1.0 for ref in refSigBitNames}, {ref: 1.0 for ref in refSigBitNames}, True
 
                 shared_primary_inputs = _shared_primary_input_parents(a, b)
-                if (recon_only_set is not None) and (sig in recon_only_set) and shared_primary_inputs:
+                if (recon_only_set is not None) and (sig in recon_only_set) and shared_primary_inputs and 0:
                     print("sig ",sig," shared_primary_inputs ",shared_primary_inputs)
                     p, p0, p1 = _compute_recon_tables(op, a, b, sorted(shared_primary_inputs))
                     return p, p0, p1, True
@@ -683,4 +683,3 @@ def populateSigProbs_recon_dp(signalNames, s_hat, s_hat_0, s_hat_1,
         if sig in s_hat:
             continue
         s_hat[sig], s_hat_0[sig], s_hat_1[sig], _ = _compute_signal_result(sig)
-

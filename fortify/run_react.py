@@ -22,8 +22,8 @@ sys.setrecursionlimit(100000)
 def _get_cached_uniform(cache, key):
     if key not in cache:
         #cache[key] = random.uniform(0.5, 0.5)
-        #cache[key] = random.uniform([0.1, 0.9])
-        cache[key] = random.choice([0.0, 1.0])
+        cache[key] = random.uniform(0.1, 0.9)
+        #cache[key] = random.choice([0.0, 1.0])
     return cache[key]
 
 def estimate_c_and_pbv_from_conditional_probs(s_hat_0, s_hat_1, s_hat,
@@ -65,19 +65,22 @@ def estimate_c_and_pbv_from_conditional_probs(s_hat_0, s_hat_1, s_hat,
             # signal = 0: P(Y=0, H=0) and P(Y=0, H=1)
             p_s0_h0 = p_secret_0 * (1 - p1_if_0)
             p_s0_h1 = p_secret_1 * (1 - p1_if_1)
+            '''
             print(
                 f"[DEBUG] joint y=0 sig={sig} ref={ref} "
                 f"p_s0_h0={p_s0_h0:.15f} p_s0_h1={p_s0_h1:.15f}"
             )
+            '''
 
             # signal = 1: P(Y=1, H=0) and P(Y=1, H=1)
             p_s1_h0 = p_secret_0 * p1_if_0
             p_s1_h1 = p_secret_1 * p1_if_1
+            '''
             print(
                 f"[DEBUG] joint y=1 sig={sig} ref={ref} "
                 f"p_s1_h0={p_s1_h0:.15f} p_s1_h1={p_s1_h1:.15f}"
             )
-
+            '''
             # ----------------------------------
             # 3. Prior (before seeing signal)
             # ----------------------------------
@@ -91,11 +94,12 @@ def estimate_c_and_pbv_from_conditional_probs(s_hat_0, s_hat_1, s_hat,
             # attacker picks best guess per observation
             best_if_s0 = max(p_s0_h0, p_s0_h1)
             best_if_s1 = max(p_s1_h0, p_s1_h1)
+            '''
             print(
                 f"[DEBUG] posterior-best sig={sig} ref={ref} "
                 f"best_if_s0={best_if_s0:.15f} best_if_s1={best_if_s1:.15f}"
             )
-
+            '''
             pbv = best_if_s0 + best_if_s1
 
             # ----------------------------------
@@ -109,11 +113,11 @@ def estimate_c_and_pbv_from_conditional_probs(s_hat_0, s_hat_1, s_hat,
                 'Leakage_PBV': leakage_pbv,
                 'prior': prior,
             }
-
+            '''
             print(
                 f"pbv={pbv:.15f} leakage={leakage_pbv:.15f}"
             )
-
+            '''
 
     for ref in refSigBitNames:
         ref_metrics = [
@@ -136,12 +140,13 @@ def estimate_c_and_pbv_from_conditional_probs(s_hat_0, s_hat_1, s_hat,
             'num_outputs': len(ref_metrics),
             'summary': 'max_per_output_leakage',
         }
+        '''
         print(
             f"[DEBUG] ref={ref} "
             f"l_max={max_metrics['Leakage_PBV']:.15f} "
             f"argmax_output={max_sig} num_outputs={len(ref_metrics)}"
         )
-
+        '''
     return {
         'per_output': per_output_results,
         'max_per_secret': max_per_secret_results,
@@ -240,7 +245,9 @@ def main(input_file_path, top_module_name, ref_module_name, ref_instance_name,
 
         # initialise priors for input bits
         for sig in inputSigBitNames:
-            prior = _get_cached_uniform(input_prior_cache, sig)
+            prior = 0.5
+            if not "key" in sig:
+                prior = _get_cached_uniform(input_prior_cache, sig)
             s_hat[sig] = prior
             s_hat_0[sig] = {ref: prior for ref in refSigBitNames}
             s_hat_1[sig] = {ref: prior for ref in refSigBitNames}
@@ -256,7 +263,8 @@ def main(input_file_path, top_module_name, ref_module_name, ref_instance_name,
                 s_hat_0[sig] = {}
                 s_hat_1[sig] = {}
                 for ref in refSigBitNames:
-                    conditional_prior = 0.5
+                    #conditional_prior = 0.5
+                    conditional_prior = _get_cached_uniform(input_prior_cache, sig)
                     s_hat_0[sig][ref] = conditional_prior
                     s_hat_1[sig][ref] = conditional_prior
                     if ref == sig:
@@ -272,7 +280,9 @@ def main(input_file_path, top_module_name, ref_module_name, ref_instance_name,
 
         # initialise priors for input bits
         for sig in inputSigBitNames:
-            prior = _get_cached_uniform(input_prior_cache, sig)
+            prior = 0.5
+            if not "key" in sig:
+                prior = _get_cached_uniform(input_prior_cache, sig)
             s_hat[sig] = prior
             s_hat_0[sig] = {ref: prior for ref in refSigBitNames}
             s_hat_1[sig] = {ref: prior for ref in refSigBitNames}
@@ -288,7 +298,8 @@ def main(input_file_path, top_module_name, ref_module_name, ref_instance_name,
                 s_hat_0[sig] = {}
                 s_hat_1[sig] = {}
                 for ref in refSigBitNames:
-                    conditional_prior = 0.5
+                    conditional_prior = _get_cached_uniform(input_prior_cache, sig)
+                    #conditional_prior = 0.5
                     s_hat_0[sig][ref] = conditional_prior
                     s_hat_1[sig][ref] = conditional_prior
                     if ref == sig:
@@ -456,7 +467,7 @@ def main(input_file_path, top_module_name, ref_module_name, ref_instance_name,
     )
     for ref, metrics in sorted_max_per_secret:
         print(
-            f"Ref: {ref}, L_max: {metrics['Leakage_PBV']:.15f}, "
+            f"Ref: {ref}, L_max: {metrics['Leakage_PBV']:.25f}, "
             f"argmax_output: {metrics['argmax_output']}"
         )
     print()
