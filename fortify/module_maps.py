@@ -44,7 +44,7 @@ seqBases = set()
 LARGE_CONST_LUT_MIN_CASES = 11
 
 
-def simplify_large_const_lut_cond(expr, min_cases=LARGE_CONST_LUT_MIN_CASES, target_bit_idx=None):
+def simplify_large_const_lut_cond(expr, min_cases=LARGE_CONST_LUT_MIN_CASES, target_bit_idx=None, clk_name=None):
     """
     Detect large constant-LUT Cond chains and approximate them as per-bit
     pass-through of the selector bus: out[i] -> in[i].
@@ -114,7 +114,11 @@ def simplify_large_const_lut_cond(expr, min_cases=LARGE_CONST_LUT_MIN_CASES, tar
         return expr
 
     selector = _selector_bit(sel_bus, target_bit_idx)
-    return selector if selector is not None else expr
+    if selector is None:
+        return expr
+    if isinstance(clk_name, str):
+        return ['And', selector, clk_name]
+    return selector
 
 
 
@@ -488,6 +492,19 @@ def getRnamesExpr(rname, low, high):
     return rnames
 
 
+def get_posedge_clk_sig(moduleAst, instance_name):
+    for item in moduleAst.items:
+        if not isinstance(item, vast.Always):
+            continue
+        sens_list = getattr(item, "sens_list", None)
+        if sens_list is None:
+            continue
+        for sens in getattr(sens_list, "list", []):
+            if isinstance(sens, vast.Sens) and sens.type == 'posedge' and isinstance(sens.sig, vast.Identifier):
+                return f'{instance_name}.{sens.sig.name}[0:0]'
+    return None
+
+
 # populates the expressions corresponding to the module/instance and all its internal modules/instances
 def populateModuleExprMap(module_name, instance_name):
     global moduleInputPortListMap
@@ -519,6 +536,8 @@ def populateModuleExprMap(module_name, instance_name):
 
     for sigName, wirewid in zip(wires_m, wiresWidths_m):
         sigWidths[sigName] = wirewid
+
+    seq_clk_name = get_posedge_clk_sig(moduleAst, instance_name)
 
     if inst_list:
         try:
@@ -618,6 +637,8 @@ def populateModuleExprMap(module_name, instance_name):
                         low = int(lbits[1])
                         high = int(lbits[0])
 
+                        cur_clk_name = seq_clk_name if isinstance(ast, vast.NonblockingSubstitution) else None
+
                         if isinstance(ast, vast.NonblockingSubstitution):
                             try:
                                 with open("debug_recurse.txt", "a") as df:
@@ -710,7 +731,10 @@ def populateModuleExprMap(module_name, instance_name):
                                     truthTableMap['{}[{}:{}]'.format(lnameonly, i, i)] = ['Xor', abit, bbit]
 
                         elif (lbits[0] == lbits[1]):
-                            truthTableMap[lname] = simplify_large_const_lut_cond(rname) if isinstance(rname, list) else rname
+                            truthTableMap[lname] = simplify_large_const_lut_cond(
+                                rname,
+                                clk_name=cur_clk_name,
+                            ) if isinstance(rname, list) else rname
 
                         else:
 
@@ -869,6 +893,7 @@ def populateModuleExprMap(module_name, instance_name):
                                     bit_exprs[i] = simplify_large_const_lut_cond(
                                         ['Cond', condName, tbit, fbit],
                                         target_bit_idx=i,
+                                        clk_name=cur_clk_name,
                                     )
 
                                 def _parse_self_ref(expr):
