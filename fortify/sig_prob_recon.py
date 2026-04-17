@@ -142,6 +142,23 @@ def _bits_from_bus(bus):
     return None
 
 
+def _lut_const_bit_prob(bus, default_bit, exception_keys, bit_prob_fn):
+    abits = _bits_from_bus(bus)
+    if abits is None:
+        return 0.5
+
+    def _exact_key_prob(key):
+        p = 1.0
+        for idx, abit in enumerate(abits):
+            bit = (key >> idx) & 1
+            pa = bit_prob_fn(abit)
+            p *= pa if bit else (1.0 - pa)
+        return p
+
+    delta = sum(_exact_key_prob(int(key)) for key in exception_keys)
+    return delta if int(default_bit) == 0 else (1.0 - delta)
+
+
 def prob_with_clamps_atomic(sig, truthTableMap, clamps, cache,
                             s_hat, s_hat_0, s_hat_1, ref_name=None,
                             visiting=None):
@@ -191,7 +208,7 @@ def prob_with_clamps_atomic(sig, truthTableMap, clamps, cache,
         op = exp[0] if exp else None
         known_ops = {"Cond", "Not", "Mix", "And", "Or", "Xor", "Eq", "NotEq",
                      "Nand", "Nor", "Srl", "Sll", "Plus", "Times", "Minus",
-                     "EqVec", "EqBus"}
+                     "EqVec", "EqBus", "LutConstBit"}
         if op not in known_ops:
             p = prob_with_clamps_atomic(op, truthTableMap, clamps, cache,
                                         s_hat, s_hat_0, s_hat_1, ref_name)
@@ -270,6 +287,24 @@ def prob_with_clamps_atomic(sig, truthTableMap, clamps, cache,
             if isinstance(sig, str):
                 visiting.remove(sig)
             return val
+
+        if op == "LutConstBit":
+            bus = exp[1] if len(exp) > 1 else ""
+            default_bit = exp[2] if len(exp) > 2 else 0
+            exception_keys = exp[3] if len(exp) > 3 else []
+            p = _lut_const_bit_prob(
+                bus,
+                default_bit,
+                exception_keys,
+                lambda bit_name: prob_with_clamps_atomic(
+                    bit_name, truthTableMap, clamps, cache,
+                    s_hat, s_hat_0, s_hat_1, ref_name, visiting
+                ),
+            )
+            cache[key] = p
+            if isinstance(sig, str):
+                visiting.remove(sig)
+            return p
 
         if op == "Not":
             c = exp[1] if len(exp) > 1 else 0
@@ -373,7 +408,7 @@ def populateSigProbs_recon_dp(signalNames, s_hat, s_hat_0, s_hat_1,
 
     known_ops = {"Cond", "Not", "Mix", "And", "Or", "Xor", "Eq", "NotEq",
                  "Nand", "Nor", "Srl", "Sll", "Plus", "Times", "Minus",
-                 "EqVec", "EqBus"}
+                 "EqVec", "EqBus", "LutConstBit"}
     binary_ops = {"And", "Or", "Xor", "Eq", "NotEq", "Nand", "Nor"}
     print("start calculation")
 
@@ -542,6 +577,16 @@ def populateSigProbs_recon_dp(signalNames, s_hat, s_hat_0, s_hat_1,
                     eqps.append(pa * pb + (1.0 - pa) * (1.0 - pb))
                 val = min(eqps) if eqps else 0.5
                 return max(val, floor)
+            if op == "LutConstBit":
+                bus = expr[1] if len(expr) > 1 else ""
+                default_bit = expr[2] if len(expr) > 2 else 0
+                exception_keys = expr[3] if len(expr) > 3 else []
+                return _lut_const_bit_prob(
+                    bus,
+                    default_bit,
+                    exception_keys,
+                    lambda bit_name: _expr_prob(bit_name, ref_name, ref_val),
+                )
             if op == "Not":
                 c = expr[1] if len(expr) > 1 else 0
                 return 1.0 - _expr_prob(c, ref_name, ref_val)

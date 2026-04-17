@@ -44,26 +44,33 @@ seqBases = set()
 LARGE_CONST_LUT_MIN_CASES = 11
 
 
-def simplify_large_const_lut_cond(expr, min_cases=LARGE_CONST_LUT_MIN_CASES):
-    """Collapse very large constant-LUT Cond chains into a compact heuristic."""
-    def _selector_lsb(bus_name):
-        if not isinstance(bus_name, str):
+def simplify_large_const_lut_cond(expr, min_cases=LARGE_CONST_LUT_MIN_CASES, target_bit_idx=None):
+    """
+    Detect large constant-LUT Cond chains and approximate them as per-bit
+    pass-through of the selector bus: out[i] -> in[i].
+    """
+    def _selector_bit(bus_name, bit_idx):
+        if bit_idx is None or not isinstance(bus_name, str):
             return None
         if "[" in bus_name and "]" in bus_name:
             base = bus_name.split("[", 1)[0]
             rng = bus_name.split("[", 1)[1].split("]", 1)[0]
             if ":" in rng:
                 try:
-                    _, lsb = map(int, rng.split(":", 1))
-                    return f"{base}[{lsb}:{lsb}]"
+                    msb, lsb = map(int, rng.split(":", 1))
+                    if lsb <= bit_idx <= msb:
+                        return f"{base}[{bit_idx}:{bit_idx}]"
+                    return None
                 except Exception:
                     return None
             try:
                 idx = int(rng)
-                return f"{base}[{idx}:{idx}]"
+                if idx == bit_idx:
+                    return f"{base}[{idx}:{idx}]"
             except Exception:
                 return None
-        return f"{bus_name}[0:0]"
+            return None
+        return f"{bus_name}[{bit_idx}:{bit_idx}]"
 
     def _is_bit_const(v):
         return isinstance(v, int) and v in (0, 1)
@@ -82,7 +89,6 @@ def simplify_large_const_lut_cond(expr, min_cases=LARGE_CONST_LUT_MIN_CASES):
             if not isinstance(bus, str) or not isinstance(key, int):
                 return expr
         else:
-            # Eq can appear before normalize_eqbus(); accept bus==const patterns.
             a = cond[1] if len(cond) > 1 else None
             b = cond[2] if len(cond) > 2 else None
             if isinstance(a, str) and isinstance(b, int):
@@ -104,13 +110,11 @@ def simplify_large_const_lut_cond(expr, min_cases=LARGE_CONST_LUT_MIN_CASES):
         return expr
     cases.append(cur)
 
-    if len(cases) < min_cases:
+    if len(cases) < min_cases or target_bit_idx is None:
         return expr
 
-    selector = _selector_lsb(sel_bus)
-    if selector is not None:
-        return selector
-    return ["Mix", 0, 1]
+    selector = _selector_bit(sel_bus, target_bit_idx)
+    return selector if selector is not None else expr
 
 
 
@@ -862,7 +866,10 @@ def populateModuleExprMap(module_name, instance_name):
                                         inner_cond = fbit[1]
                                         if inner_cond == ['Not', condName] and fbit[3] == 0:
                                             fbit = fbit[2]
-                                    bit_exprs[i] = simplify_large_const_lut_cond(['Cond', condName, tbit, fbit])
+                                    bit_exprs[i] = simplify_large_const_lut_cond(
+                                        ['Cond', condName, tbit, fbit],
+                                        target_bit_idx=i,
+                                    )
 
                                 def _parse_self_ref(expr):
                                     """Return bit index if expr is a self-reference to lnameonly[idx:idx]."""

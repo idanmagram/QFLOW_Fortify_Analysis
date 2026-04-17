@@ -22,8 +22,8 @@ sys.setrecursionlimit(100000)
 def _get_cached_uniform(cache, key):
     if key not in cache:
         #cache[key] = random.uniform(0.5, 0.5)
-        cache[key] = random.uniform(0.1, 0.9)
-        #cache[key] = random.choice([0.0, 1.0])
+        #cache[key] = random.uniform(0.1, 0.9)
+        cache[key] = random.choice([0.0, 1.0])
     return cache[key]
 
 def estimate_c_and_pbv_from_conditional_probs(s_hat_0, s_hat_1, s_hat,
@@ -246,7 +246,7 @@ def main(input_file_path, top_module_name, ref_module_name, ref_instance_name,
         # initialise priors for input bits
         for sig in inputSigBitNames:
             prior = 0.5
-            if not "key" in sig:
+            if  "key" in sig:
                 prior = _get_cached_uniform(input_prior_cache, sig)
             s_hat[sig] = prior
             s_hat_0[sig] = {ref: prior for ref in refSigBitNames}
@@ -263,8 +263,8 @@ def main(input_file_path, top_module_name, ref_module_name, ref_instance_name,
                 s_hat_0[sig] = {}
                 s_hat_1[sig] = {}
                 for ref in refSigBitNames:
-                    #conditional_prior = 0.5
-                    conditional_prior = _get_cached_uniform(input_prior_cache, sig)
+                    conditional_prior = 0.5
+                    #conditional_prior = _get_cached_uniform(input_prior_cache, sig)
                     s_hat_0[sig][ref] = conditional_prior
                     s_hat_1[sig][ref] = conditional_prior
                     if ref == sig:
@@ -281,7 +281,7 @@ def main(input_file_path, top_module_name, ref_module_name, ref_instance_name,
         # initialise priors for input bits
         for sig in inputSigBitNames:
             prior = 0.5
-            if not "key" in sig:
+            if "key" in sig:
                 prior = _get_cached_uniform(input_prior_cache, sig)
             s_hat[sig] = prior
             s_hat_0[sig] = {ref: prior for ref in refSigBitNames}
@@ -298,8 +298,8 @@ def main(input_file_path, top_module_name, ref_module_name, ref_instance_name,
                 s_hat_0[sig] = {}
                 s_hat_1[sig] = {}
                 for ref in refSigBitNames:
-                    conditional_prior = _get_cached_uniform(input_prior_cache, sig)
-                    #conditional_prior = 0.5
+                    #conditional_prior = _get_cached_uniform(input_prior_cache, sig)
+                    conditional_prior = 0.5
                     s_hat_0[sig][ref] = conditional_prior
                     s_hat_1[sig][ref] = conditional_prior
                     if ref == sig:

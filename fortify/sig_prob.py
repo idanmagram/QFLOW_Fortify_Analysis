@@ -26,6 +26,37 @@ def _key(sig):
         return tuple(_key(x) for x in sig)
     return sig
 
+
+def _bits_from_bus(bus):
+    if not isinstance(bus, str):
+        return None
+    if "[" in bus and ":" in bus and bus.endswith("]"):
+        try:
+            base = bus.split("[", 1)[0]
+            rng = bus.split("[", 1)[1].split("]")[0]
+            msb, lsb = map(int, rng.split(":"))
+            return [f"{base}[{i}:{i}]" for i in range(lsb, msb + 1)]
+        except Exception:
+            return None
+    return None
+
+
+def _lut_const_bit_prob(bus, default_bit, exception_keys, bit_prob_fn):
+    abits = _bits_from_bus(bus)
+    if abits is None:
+        return 0.5
+
+    def _exact_key_prob(key):
+        p = 1.0
+        for idx, abit in enumerate(abits):
+            bit = (key >> idx) & 1
+            pa = bit_prob_fn(abit)
+            p *= pa if bit else (1.0 - pa)
+        return p
+
+    delta = sum(_exact_key_prob(int(key)) for key in exception_keys)
+    return delta if int(default_bit) == 0 else (1.0 - delta)
+
 # recursive signal probability and conditional signal probability calculation
 def populateSigProbs(sig, encounteredSigs, s_hat, s_hat_0, s_hat_1, truthTableMap, refSigBitNames, inputSigBitNames):
     key = _key(sig)
@@ -58,7 +89,7 @@ def populateSigProbs(sig, encounteredSigs, s_hat, s_hat_0, s_hat_1, truthTableMa
     # Expression nodes (e.g., Eq, Cond) that are not standalone signals
     if isinstance(sig, list):
         op = sig[0]
-        known_ops = {"Cond", "Not", "Mix", "And", "Or", "Xor", "Eq", "NotEq", "Srl", "Sll", "Plus", "Times", "Minus", "EqVec", "EqBus"}
+        known_ops = {"Cond", "Not", "Mix", "And", "Or", "Xor", "Eq", "NotEq", "Srl", "Sll", "Plus", "Times", "Minus", "EqVec", "EqBus", "LutConstBit"}
         if op not in known_ops:
             # Treat as pass-through of first element if unrecognized op (e.g., concatenation artifacts)
             target = op
@@ -182,6 +213,34 @@ def populateSigProbs(sig, encounteredSigs, s_hat, s_hat_0, s_hat_1, truthTableMa
                 v1 = min(eqps1[ref]) if eqps1[ref] else 0.5
                 s_hat_0[key][ref] = max(v0, floor)
                 s_hat_1[key][ref] = max(v1, floor)
+            return
+        if op == "LutConstBit":
+            bus = sig[1] if len(sig) > 1 else ""
+            default_bit = sig[2] if len(sig) > 2 else 0
+            exception_keys = sig[3] if len(sig) > 3 else []
+            for abit in _bits_from_bus(bus) or []:
+                populateSigProbs(abit, encounteredSigs, s_hat, s_hat_0, s_hat_1, truthTableMap, refSigBitNames, inputSigBitNames)
+            s_hat[key] = _lut_const_bit_prob(
+                bus,
+                default_bit,
+                exception_keys,
+                lambda bit_name: s_hat.get(_key(bit_name), 0.5),
+            )
+            s_hat_0[key] = {}
+            s_hat_1[key] = {}
+            for ref in refSigBitNames:
+                s_hat_0[key][ref] = _lut_const_bit_prob(
+                    bus,
+                    default_bit,
+                    exception_keys,
+                    lambda bit_name, ref=ref: s_hat_0.get(_key(bit_name), {}).get(ref, s_hat.get(_key(bit_name), 0.5)),
+                )
+                s_hat_1[key][ref] = _lut_const_bit_prob(
+                    bus,
+                    default_bit,
+                    exception_keys,
+                    lambda bit_name, ref=ref: s_hat_1.get(_key(bit_name), {}).get(ref, s_hat.get(_key(bit_name), 0.5)),
+                )
             return
 
         if op == "Not":
