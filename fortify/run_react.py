@@ -246,7 +246,7 @@ def main(input_file_path, top_module_name, ref_module_name, ref_instance_name,
         # initialise priors for input bits
         for sig in inputSigBitNames:
             prior = 0.5
-            if  "key" in sig:
+            if  "state" in sig:
                 prior = _get_cached_uniform(input_prior_cache, sig)
             s_hat[sig] = prior
             s_hat_0[sig] = {ref: prior for ref in refSigBitNames}
@@ -281,7 +281,7 @@ def main(input_file_path, top_module_name, ref_module_name, ref_instance_name,
         # initialise priors for input bits
         for sig in inputSigBitNames:
             prior = 0.5
-            if "key" in sig:
+            if "state" in sig:
                 prior = _get_cached_uniform(input_prior_cache, sig)
             s_hat[sig] = prior
             s_hat_0[sig] = {ref: prior for ref in refSigBitNames}

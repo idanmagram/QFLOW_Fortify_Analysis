@@ -492,17 +492,65 @@ def getRnamesExpr(rname, low, high):
     return rnames
 
 
-def get_posedge_clk_sig(moduleAst, instance_name):
+def _collect_nonblocking_nodes(ast):
+    nodes = []
+    if ast is None:
+        return nodes
+    if isinstance(ast, vast.NonblockingSubstitution):
+        nodes.append(ast)
+    for child in ast.children():
+        nodes.extend(_collect_nonblocking_nodes(child))
+    return nodes
+
+
+def get_nonblocking_clk_map(moduleAst, instance_name):
+    nb_clk_map = {}
     for item in moduleAst.items:
         if not isinstance(item, vast.Always):
             continue
         sens_list = getattr(item, "sens_list", None)
         if sens_list is None:
             continue
+
+        clk_name = None
         for sens in getattr(sens_list, "list", []):
-            if isinstance(sens, vast.Sens) and sens.type == 'posedge' and isinstance(sens.sig, vast.Identifier):
-                return f'{instance_name}.{sens.sig.name}[0:0]'
-    return None
+            if (
+                isinstance(sens, vast.Sens)
+                and sens.type == 'posedge'
+                and isinstance(sens.sig, vast.Identifier)
+                and sens.sig.name == 'clk'
+            ):
+                clk_name = f'{instance_name}.clk[0:0]'
+                break
+
+        for nb_ast in _collect_nonblocking_nodes(getattr(item, "statement", None)):
+            lhs_ast = getattr(nb_ast.left, "var", nb_ast.left)
+            try:
+                lhs_name = getSigName(lhs_ast, instance_name)
+                lhs_base = lhs_name.rsplit('[', 1)[0]
+                nb_clk_map[lhs_base] = clk_name
+            except Exception:
+                nb_clk_map[hash(nb_ast)] = clk_name
+
+    return nb_clk_map
+
+
+def gate_with_clk(expr, clk_name):
+    """Approximate posedge-triggered updates as data gated by the clock signal."""
+    if not isinstance(clk_name, str):
+        return expr
+    if isinstance(expr, int):
+        if expr == 0:
+            return 0
+        if expr == 1:
+            return clk_name
+        return expr
+    if expr == clk_name:
+        return clk_name
+    if isinstance(expr, list) and len(expr) == 3 and expr[0] == 'And':
+        if expr[1] == clk_name or expr[2] == clk_name:
+            return expr
+    return ['And', expr, clk_name]
 
 
 # populates the expressions corresponding to the module/instance and all its internal modules/instances
@@ -537,7 +585,7 @@ def populateModuleExprMap(module_name, instance_name):
     for sigName, wirewid in zip(wires_m, wiresWidths_m):
         sigWidths[sigName] = wirewid
 
-    seq_clk_name = get_posedge_clk_sig(moduleAst, instance_name)
+    nonblocking_clk_map = get_nonblocking_clk_map(moduleAst, instance_name)
 
     if inst_list:
         try:
@@ -637,7 +685,11 @@ def populateModuleExprMap(module_name, instance_name):
                         low = int(lbits[1])
                         high = int(lbits[0])
 
-                        cur_clk_name = seq_clk_name if isinstance(ast, vast.NonblockingSubstitution) else None
+                        cur_clk_name = None
+                        if isinstance(ast, vast.NonblockingSubstitution):
+                            cur_clk_name = nonblocking_clk_map.get(lnameonly)
+                            if cur_clk_name is None:
+                                cur_clk_name = nonblocking_clk_map.get(hash(ast))
 
                         if isinstance(ast, vast.NonblockingSubstitution):
                             try:
@@ -715,7 +767,7 @@ def populateModuleExprMap(module_name, instance_name):
                                     sum_no_carry = _xor(abit, bbit)
                                     sum_bit = _xor(sum_no_carry, carry)
                                     carry_out = _or(_and(abit, bbit), _or(_and(abit, carry), _and(bbit, carry)))
-                                    truthTableMap['{}[{}:{}]'.format(lnameonly, i, i)] = sum_bit
+                                    truthTableMap['{}[{}:{}]'.format(lnameonly, i, i)] = gate_with_clk(sum_bit, cur_clk_name)
                                     carry = carry_out
                             else:
                                 # Fallback: bitwise XOR (original approximation)
@@ -728,13 +780,13 @@ def populateModuleExprMap(module_name, instance_name):
                                 for i in range(low, high + 1):
                                     abit = a_bits[1][i - low] if a_bits and len(a_bits) > 1 else 0
                                     bbit = b_bits[1][i - low] if b_bits and len(b_bits) > 1 else 0
-                                    truthTableMap['{}[{}:{}]'.format(lnameonly, i, i)] = ['Xor', abit, bbit]
+                                    truthTableMap['{}[{}:{}]'.format(lnameonly, i, i)] = gate_with_clk(['Xor', abit, bbit], cur_clk_name)
 
                         elif (lbits[0] == lbits[1]):
-                            truthTableMap[lname] = simplify_large_const_lut_cond(
+                            truthTableMap[lname] = gate_with_clk(simplify_large_const_lut_cond(
                                 rname,
                                 clk_name=cur_clk_name,
-                            ) if isinstance(rname, list) else rname
+                            ) if isinstance(rname, list) else rname, cur_clk_name)
 
                         else:
 
@@ -743,8 +795,10 @@ def populateModuleExprMap(module_name, instance_name):
                                     rhsAst, vast.Eq) or isinstance(rhsAst, vast.NotEq) or isinstance(rhsAst, vast.Sll):
                                 rnames = getRnamesExpr(rname, low, high)
                                 for i in range(low, high + 1):
-                                    truthTableMap['{}[{}:{}]'.format(lnameonly, i, i)] = [rnames[0], rnames[1][i - low],
-                                                                                          rnames[2][i - low]]
+                                    truthTableMap['{}[{}:{}]'.format(lnameonly, i, i)] = gate_with_clk(
+                                        [rnames[0], rnames[1][i - low], rnames[2][i - low]],
+                                        cur_clk_name,
+                                    )
 
 
                             elif isinstance(rhsAst, vast.IntConst):
@@ -756,7 +810,10 @@ def populateModuleExprMap(module_name, instance_name):
                                 bitstring = bitstring[::-1]
                                 for i in range(low, high + 1):
                                     bit_idx = i - low
-                                    truthTableMap['{}[{}:{}]'.format(lnameonly, i, i)] = int(bitstring[bit_idx])
+                                    truthTableMap['{}[{}:{}]'.format(lnameonly, i, i)] = gate_with_clk(
+                                        int(bitstring[bit_idx]),
+                                        cur_clk_name,
+                                    )
                             elif isinstance(rhsAst, vast.Cond):
                                 condName = getSigName(rhsAst.cond, instance_name)
                                 tName = getSigName(rhsAst.true_value, instance_name)
@@ -981,16 +1038,22 @@ def populateModuleExprMap(module_name, instance_name):
                                             if shift_delta != 0:
                                                 chain_expr = _build_shift_chain(i, shift_delta, depth_limit, wrap,
                                                                                 data_expr)
-                                                truthTableMap['{}[{}:{}]'.format(lnameonly, i, i)] = chain_expr
+                                                truthTableMap['{}[{}:{}]'.format(lnameonly, i, i)] = gate_with_clk(
+                                                    chain_expr,
+                                                    cur_clk_name,
+                                                )
                                                 continue
                                         # Load-then-shift modeling: if one branch is self-shift and the other
                                         # branch is an external bus (e.g., key), approximate as a Mix over that bus.
                                         if ref_idx is not None and isinstance(data_expr, str) and not data_expr.startswith(
                                                 lnameonly):
                                             mix_bits = _expand_bus_bits(data_expr)
-                                            truthTableMap['{}[{}:{}]'.format(lnameonly, i, i)] = ['Mix'] + mix_bits
+                                            truthTableMap['{}[{}:{}]'.format(lnameonly, i, i)] = gate_with_clk(
+                                                ['Mix'] + mix_bits,
+                                                cur_clk_name,
+                                            )
                                             continue
-                                    truthTableMap['{}[{}:{}]'.format(lnameonly, i, i)] = expr
+                                    truthTableMap['{}[{}:{}]'.format(lnameonly, i, i)] = gate_with_clk(expr, cur_clk_name)
 
                             elif isinstance(rhsAst, vast.Srl):
                                 # logical right shift by constant
@@ -1001,10 +1064,12 @@ def populateModuleExprMap(module_name, instance_name):
                                 for i in range(low, high + 1):
                                     src_idx = i + shift_amt
                                     if src_idx <= high:
-                                        truthTableMap['{}[{}:{}]'.format(lnameonly, i, i)] = '{}[{}:{}]'.format(
-                                            lnameonly, src_idx, src_idx)
+                                        truthTableMap['{}[{}:{}]'.format(lnameonly, i, i)] = gate_with_clk(
+                                            '{}[{}:{}]'.format(lnameonly, src_idx, src_idx),
+                                            cur_clk_name,
+                                        )
                                     else:
-                                        truthTableMap['{}[{}:{}]'.format(lnameonly, i, i)] = 0
+                                        truthTableMap['{}[{}:{}]'.format(lnameonly, i, i)] = gate_with_clk(0, cur_clk_name)
                             elif isinstance(rhsAst, vast.Plus):
                                 # Heuristic for probability preservation:
                                 # treat Plus as pass-through of one addend (prefer self bus).
@@ -1037,14 +1102,17 @@ def populateModuleExprMap(module_name, instance_name):
                                     chosen_name, chosen_bits = left_name, left_bits
 
                                 for i in range(low, high + 1):
-                                    truthTableMap['{}[{}:{}]'.format(lnameonly, i, i)] = _bit(chosen_name, chosen_bits, i)
+                                    truthTableMap['{}[{}:{}]'.format(lnameonly, i, i)] = gate_with_clk(
+                                        _bit(chosen_name, chosen_bits, i),
+                                        cur_clk_name,
+                                    )
                             else:
                                 # Check if rname is a list (concatenation or operation result)
                                 if isinstance(rname, list):
                                     if rname and rname[0] == 'Mix':
                                         # Dynamic index select already represented as Mix; reuse it for each dest bit.
                                         for i in range(low, high + 1):
-                                            truthTableMap['{}[{}:{}]'.format(lnameonly, i, i)] = rname
+                                            truthTableMap['{}[{}:{}]'.format(lnameonly, i, i)] = gate_with_clk(rname, cur_clk_name)
                                     else:
                                         # Handle concatenation: rname is [signal1, signal2, signal3, ...]
                                         # Bits are mapped left-to-right in the list (right-to-left in Verilog)
@@ -1069,12 +1137,12 @@ def populateModuleExprMap(module_name, instance_name):
                                                         src_bit = '{}[{}:{}]'.format(elem_base, elem_lsb + j,
                                                                                      elem_lsb + j)
                                                         dest_bit = '{}[{}:{}]'.format(lnameonly, bit_index, bit_index)
-                                                        truthTableMap[dest_bit] = src_bit
+                                                        truthTableMap[dest_bit] = gate_with_clk(src_bit, cur_clk_name)
                                                         bit_index += 1
                                             elif isinstance(concat_elem, int):
                                                 if bit_index <= high:
                                                     truthTableMap['{}[{}:{}]'.format(lnameonly, bit_index,
-                                                                                     bit_index)] = concat_elem
+                                                                                     bit_index)] = gate_with_clk(concat_elem, cur_clk_name)
                                                     bit_index += 1
                                 else:
                                     # Handle simple signal assignment
@@ -1082,11 +1150,16 @@ def populateModuleExprMap(module_name, instance_name):
                                         rnameonly = rname.rsplit('[', 1)[0]
                                         rbase = int(rname.split("]")[0].split(":")[1])
                                         for i in range(low, high + 1):
-                                            truthTableMap['{}[{}:{}]'.format(lnameonly, i, i)] = '{}[{}:{}]'.format(
-                                                rnameonly, rbase + i - low, rbase + i - low)
+                                            truthTableMap['{}[{}:{}]'.format(lnameonly, i, i)] = gate_with_clk(
+                                                '{}[{}:{}]'.format(rnameonly, rbase + i - low, rbase + i - low),
+                                                cur_clk_name,
+                                            )
                                     except (IndexError, ValueError):
                                         # Handle malformed signal names gracefully
-                                        truthTableMap['{}[{}:{}]'.format(lnameonly, low, high)] = rname
+                                        truthTableMap['{}[{}:{}]'.format(lnameonly, low, high)] = gate_with_clk(
+                                            rname,
+                                            cur_clk_name,
+                                        )
                     elif isinstance(ast, vast.Instance):
                         pass
                     else:
