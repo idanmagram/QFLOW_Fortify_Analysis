@@ -27,10 +27,10 @@ def _init_prob_tables_for_refs(signalNames, inputSigBitNames, refSigBitNames):
         s_hat[sig] = 0.5
         s_hat_0[sig] = {ref: 0.5 for ref in refSigBitNames}
         s_hat_1[sig] = {ref: 0.5 for ref in refSigBitNames}
-        if "rst" in sig:
-            s_hat[sig] = 0.1
-            s_hat_0[sig] = {ref: 0.1 for ref in refSigBitNames}
-            s_hat_1[sig] = {ref: 0.1 for ref in refSigBitNames}
+        if "rst" in sig.lower():
+            s_hat[sig] = 0.0
+            s_hat_0[sig] = {ref: 0.0 for ref in refSigBitNames}
+            s_hat_1[sig] = {ref: 0.0 for ref in refSigBitNames}
 
     for sig in signalNames:
         if sig in refSigBitNames:
@@ -111,6 +111,8 @@ def estimate_c_and_pbv_from_conditional_probs(s_hat_0, s_hat_1, s_hat,
                                               target_signals=None,
                                               max_workers=None):
     results = {}
+    debug_sig = "top.out[0:0]"
+    debug_ref = "top.key[24:24]"
     signals_to_check = target_signals if target_signals is not None else signalNames
 
     tasks = []
@@ -143,6 +145,21 @@ def estimate_c_and_pbv_from_conditional_probs(s_hat_0, s_hat_1, s_hat,
 
         pbv = sum(max(joint_J[y][0], joint_J[y][1]) for y in [0, 1])
         leakage_pbv = pbv / max(prior_0, prior_1)
+
+        if sig == debug_sig and ref == debug_ref:
+            print(f"[DEBUG PBV] sig={sig} ref={ref}")
+            print(f"[DEBUG PBV] p_y1_h0={p_y1_h0:.25f}")
+            print(f"[DEBUG PBV] p_y1_h1={p_y1_h1:.25f}")
+            print(f"[DEBUG PBV] prior_0={prior_0:.25f}")
+            print(f"[DEBUG PBV] prior_1={prior_1:.25f}")
+            print(f"[DEBUG PBV] joint_y0_h0={joint_J[0][0]:.25f}")
+            print(f"[DEBUG PBV] joint_y0_h1={joint_J[0][1]:.25f}")
+            print(f"[DEBUG PBV] joint_y1_h0={joint_J[1][0]:.25f}")
+            print(f"[DEBUG PBV] joint_y1_h1={joint_J[1][1]:.25f}")
+            print(f"[DEBUG PBV] best_y0={max(joint_J[0][0], joint_J[0][1]):.25f}")
+            print(f"[DEBUG PBV] best_y1={max(joint_J[1][0], joint_J[1][1]):.25f}")
+            print(f"[DEBUG PBV] pbv={pbv:.25f}")
+            print(f"[DEBUG PBV] leakage_pbv={leakage_pbv:.25f}")
 
         denom1 = p_y1_h0 + p_y1_h1
         denom0 = (1 - p_y1_h0) + (1 - p_y1_h1)
@@ -286,10 +303,10 @@ def main(input_file_path, top_module_name, ref_module_name, ref_instance_name,
             s_hat[sig] = 0.5
             s_hat_0[sig] = {ref: 0.5 for ref in refSigBitNames}
             s_hat_1[sig] = {ref: 0.5 for ref in refSigBitNames}
-            if "rst" in sig:
-                s_hat[sig] = 0.1
-                s_hat_0[sig] = {ref: 0.1 for ref in refSigBitNames}
-                s_hat_1[sig] = {ref: 0.1 for ref in refSigBitNames}
+            if "rst" in sig.lower():
+                s_hat[sig] = 0.0
+                s_hat_0[sig] = {ref: 0.0 for ref in refSigBitNames}
+                s_hat_1[sig] = {ref: 0.0 for ref in refSigBitNames}
 
         # initialise leakage scores of reference signal bits
         for sig in signalNames:
@@ -317,10 +334,10 @@ def main(input_file_path, top_module_name, ref_module_name, ref_instance_name,
             s_hat[sig] = 0.5
             s_hat_0[sig] = {ref: 0.5 for ref in refSigBitNames}
             s_hat_1[sig] = {ref: 0.5 for ref in refSigBitNames}
-            if "rst" in sig:
-                s_hat[sig] = 0.1
-                s_hat_0[sig] = {ref: 0.1 for ref in refSigBitNames}
-                s_hat_1[sig] = {ref: 0.1 for ref in refSigBitNames}
+            if "rst" in sig.lower():
+                s_hat[sig] = 0.0
+                s_hat_0[sig] = {ref: 0.0 for ref in refSigBitNames}
+                s_hat_1[sig] = {ref: 0.0 for ref in refSigBitNames}
 
         # initialise leakage scores of reference signal bits
         for sig in signalNames:

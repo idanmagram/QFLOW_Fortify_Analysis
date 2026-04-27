@@ -31,6 +31,8 @@ def estimate_c_and_pbv_from_conditional_probs(s_hat_0, s_hat_1, s_hat,
                                               target_signals=None):
     per_output_results = {}
     max_per_secret_results = {}
+    debug_sig = "top.out[0:0]"
+    debug_ref = "top.key[24:24]"
 
     signals_to_check = target_signals if target_signals is not None else signalNames
     #print("\n[DEBUG] estimate_c_and_pbv_from_conditional_probs")
@@ -107,6 +109,22 @@ def estimate_c_and_pbv_from_conditional_probs(s_hat_0, s_hat_1, s_hat,
             # ----------------------------------
 
             leakage_pbv = pbv / prior
+
+            if sig == debug_sig and ref == debug_ref:
+                print(f"[DEBUG PBV] sig={sig} ref={ref}")
+                print(f"[DEBUG PBV] p1_if_0={p1_if_0:.25f}")
+                print(f"[DEBUG PBV] p1_if_1={p1_if_1:.25f}")
+                print(f"[DEBUG PBV] p_secret_0={p_secret_0:.25f}")
+                print(f"[DEBUG PBV] p_secret_1={p_secret_1:.25f}")
+                print(f"[DEBUG PBV] p_s0_h0={p_s0_h0:.25f}")
+                print(f"[DEBUG PBV] p_s0_h1={p_s0_h1:.25f}")
+                print(f"[DEBUG PBV] p_s1_h0={p_s1_h0:.25f}")
+                print(f"[DEBUG PBV] p_s1_h1={p_s1_h1:.25f}")
+                print(f"[DEBUG PBV] best_if_s0={best_if_s0:.25f}")
+                print(f"[DEBUG PBV] best_if_s1={best_if_s1:.25f}")
+                print(f"[DEBUG PBV] prior={prior:.25f}")
+                print(f"[DEBUG PBV] pbv={pbv:.25f}")
+                print(f"[DEBUG PBV] leakage_pbv={leakage_pbv:.25f}")
 
             per_output_results[(sig,ref)] = {
                 'PBV': pbv,
@@ -251,10 +269,10 @@ def main(input_file_path, top_module_name, ref_module_name, ref_instance_name,
             s_hat[sig] = prior
             s_hat_0[sig] = {ref: prior for ref in refSigBitNames}
             s_hat_1[sig] = {ref: prior for ref in refSigBitNames}
-            if "rst" in sig:
-                s_hat[sig] = 0.1
-                s_hat_0[sig] = {ref: 0.1 for ref in refSigBitNames}
-                s_hat_1[sig] = {ref: 0.1 for ref in refSigBitNames}
+            if "rst" in sig.lower():
+                s_hat[sig] = 0.0
+                s_hat_0[sig] = {ref: 0.0 for ref in refSigBitNames}
+                s_hat_1[sig] = {ref: 0.0 for ref in refSigBitNames}
 
         # initialise leakage scores of reference signal bits
         for sig in signalNames:
@@ -286,10 +304,10 @@ def main(input_file_path, top_module_name, ref_module_name, ref_instance_name,
             s_hat[sig] = prior
             s_hat_0[sig] = {ref: prior for ref in refSigBitNames}
             s_hat_1[sig] = {ref: prior for ref in refSigBitNames}
-            if "rst" in sig:
-                s_hat[sig] = 0.1
-                s_hat_0[sig] = {ref: 0.1 for ref in refSigBitNames}
-                s_hat_1[sig] = {ref: 0.1 for ref in refSigBitNames}
+            if "rst" in sig.lower():
+                s_hat[sig] = 0.0
+                s_hat_0[sig] = {ref: 0.0 for ref in refSigBitNames}
+                s_hat_1[sig] = {ref: 0.0 for ref in refSigBitNames}
 
         # initialise leakage scores of reference signal bits
         for sig in signalNames:
@@ -430,11 +448,11 @@ def main(input_file_path, top_module_name, ref_module_name, ref_instance_name,
     with open("s_hat.txt", "w") as f:
         print("s_hat", s_hat, file=f)
 
-    #with open("s_hat_0.txt", "w") as f:
-    #    print("s_hat_0", s_hat_0, file=f)
+    with open("s_hat_0.txt", "w") as f:
+        print("s_hat_0", s_hat_0, file=f)
 
-    #with open("s_hat_1.txt", "w") as f:
-    #    print("s_hat_1", s_hat_1, file=f)
+    with open("s_hat_1.txt", "w") as f:
+        print("s_hat_1", s_hat_1, file=f)
 
         # print("s_hat0: ",s_hat_0)
         # print("s_hat1: ", s_hat_1)
