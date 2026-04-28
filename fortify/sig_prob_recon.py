@@ -160,6 +160,13 @@ def _lut_const_bit_prob(bus, default_bit, exception_keys, bit_prob_fn):
     return delta if int(default_bit) == 0 else (1.0 - delta)
 
 
+def _lut_const_bit_prob_with_clk(bus, default_bit, exception_keys, bit_prob_fn, clk_name=None):
+    p = _lut_const_bit_prob(bus, default_bit, exception_keys, bit_prob_fn)
+    if isinstance(clk_name, str):
+        return p * bit_prob_fn(clk_name)
+    return p
+
+
 def prob_with_clamps_atomic(sig, truthTableMap, clamps, cache,
                             s_hat, s_hat_0, s_hat_1, ref_name=None,
                             visiting=None):
@@ -293,7 +300,8 @@ def prob_with_clamps_atomic(sig, truthTableMap, clamps, cache,
             bus = exp[1] if len(exp) > 1 else ""
             default_bit = exp[2] if len(exp) > 2 else 0
             exception_keys = exp[3] if len(exp) > 3 else []
-            p = _lut_const_bit_prob(
+            clk_name = exp[4] if len(exp) > 4 else None
+            p = _lut_const_bit_prob_with_clk(
                 bus,
                 default_bit,
                 exception_keys,
@@ -301,6 +309,7 @@ def prob_with_clamps_atomic(sig, truthTableMap, clamps, cache,
                     bit_name, truthTableMap, clamps, cache,
                     s_hat, s_hat_0, s_hat_1, ref_name, visiting
                 ),
+                clk_name=clk_name,
             )
             cache[key] = p
             if isinstance(sig, str):
@@ -582,11 +591,13 @@ def populateSigProbs_recon_dp(signalNames, s_hat, s_hat_0, s_hat_1,
                 bus = expr[1] if len(expr) > 1 else ""
                 default_bit = expr[2] if len(expr) > 2 else 0
                 exception_keys = expr[3] if len(expr) > 3 else []
-                return _lut_const_bit_prob(
+                clk_name = expr[4] if len(expr) > 4 else None
+                return _lut_const_bit_prob_with_clk(
                     bus,
                     default_bit,
                     exception_keys,
                     lambda bit_name: _expr_prob(bit_name, ref_name, ref_val),
+                    clk_name=clk_name,
                 )
             if op == "Not":
                 c = expr[1] if len(expr) > 1 else 0

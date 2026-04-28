@@ -46,32 +46,17 @@ LARGE_CONST_LUT_MIN_CASES = 11
 
 def simplify_large_const_lut_cond(expr, min_cases=LARGE_CONST_LUT_MIN_CASES, target_bit_idx=None, clk_name=None):
     """
-    Detect large constant-LUT Cond chains and approximate them as per-bit
-    pass-through of the selector bus: out[i] -> in[i].
-    """
-    def _selector_bit(bus_name, bit_idx):
-        if bit_idx is None or not isinstance(bus_name, str):
-            return None
-        if "[" in bus_name and "]" in bus_name:
-            base = bus_name.split("[", 1)[0]
-            rng = bus_name.split("[", 1)[1].split("]", 1)[0]
-            if ":" in rng:
-                try:
-                    msb, lsb = map(int, rng.split(":", 1))
-                    if lsb <= bit_idx <= msb:
-                        return f"{base}[{bit_idx}:{bit_idx}]"
-                    return None
-                except Exception:
-                    return None
-            try:
-                idx = int(rng)
-                if idx == bit_idx:
-                    return f"{base}[{idx}:{idx}]"
-            except Exception:
-                return None
-            return None
-        return f"{bus_name}[{bit_idx}:{bit_idx}]"
+    Detect large constant-LUT Cond chains and collapse them into an exact
+    per-bit LUT node. This is used for constructs such as:
 
+        always @(posedge clk)
+            case (in)
+                ...
+                out <= <constant>;
+
+    The probability engine can then evaluate the output bit exactly from the
+    input-bit probabilities.
+    """
     def _is_bit_const(v):
         return isinstance(v, int) and v in (0, 1)
 
@@ -103,22 +88,20 @@ def simplify_large_const_lut_cond(expr, min_cases=LARGE_CONST_LUT_MIN_CASES, tar
             return expr
         if not _is_bit_const(tval):
             return expr
-        cases.append(tval)
+        cases.append((key, int(tval)))
         cur = fval
 
     if not _is_bit_const(cur):
         return expr
-    cases.append(cur)
+    default_bit = int(cur)
 
-    if len(cases) < min_cases or target_bit_idx is None:
+    if len(cases) < min_cases or target_bit_idx is None or not isinstance(sel_bus, str):
         return expr
 
-    selector = _selector_bit(sel_bus, target_bit_idx)
-    if selector is None:
-        return expr
+    exception_keys = [key for key, bit in cases if bit != default_bit]
     if isinstance(clk_name, str):
-        return ['And', selector, clk_name]
-    return selector
+        return ['LutConstBit', sel_bus, default_bit, exception_keys, clk_name]
+    return ['LutConstBit', sel_bus, default_bit, exception_keys]
 
 
 
@@ -539,6 +522,11 @@ def gate_with_clk(expr, clk_name):
     """Approximate posedge-triggered updates as data gated by the clock signal."""
     if not isinstance(clk_name, str):
         return expr
+    if isinstance(expr, list) and expr and expr[0] == 'LutConstBit':
+        if len(expr) > 4 and expr[4] == clk_name:
+            return expr
+        if len(expr) == 4:
+            return expr + [clk_name]
     if isinstance(expr, int):
         if expr == 0:
             return 0

@@ -445,14 +445,14 @@ def main(input_file_path, top_module_name, ref_module_name, ref_instance_name,
             done += 1
     print("finished calc")
 
-    with open("s_hat.txt", "w") as f:
-        print("s_hat", s_hat, file=f)
+    #with open("s_hat.txt", "w") as f:
+    #    print("s_hat", s_hat, file=f)
 
-    with open("s_hat_0.txt", "w") as f:
-        print("s_hat_0", s_hat_0, file=f)
+    #with open("s_hat_0.txt", "w") as f:
+    #    print("s_hat_0", s_hat_0, file=f)
 
-    with open("s_hat_1.txt", "w") as f:
-        print("s_hat_1", s_hat_1, file=f)
+    #with open("s_hat_1.txt", "w") as f:
+    #    print("s_hat_1", s_hat_1, file=f)
 
         # print("s_hat0: ",s_hat_0)
         # print("s_hat1: ", s_hat_1)
