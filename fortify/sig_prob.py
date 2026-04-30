@@ -29,6 +29,7 @@ _AES_SBOX_OUTPUT_BITS = tuple(
     tuple((AES_SBOX[value] >> bit) & 1 for bit in range(8))
     for value in range(256)
 )
+REPRESENTATIVE_LUT_INDICATOR_MEAN = 0.5
 
 # incremental signal probability formulae for the standard logic gates
 def incSigProb(a, b, op):
@@ -74,16 +75,20 @@ def _lut_const_bit_prob(bus, default_bit, exception_keys, bit_prob_fn):
     if abits is None:
         return 0.5
 
-    def _exact_key_prob(key):
-        p = 1.0
-        for idx, abit in enumerate(abits):
-            bit = (key >> idx) & 1
-            pa = bit_prob_fn(abit)
-            p *= pa if bit else (1.0 - pa)
-        return p
+    # Fast approximation requested by user:
+    # choose a single representative input byte x* from the marginals,
+    # estimate P(in=x*), and approximate the LUT output-bit indicator as a
+    # Bernoulli(0.5) random variable representative of the table outputs.
+    p_x = 1.0
+    for abit in abits:
+        pa = bit_prob_fn(abit)
+        if pa >= 0.5:
+            p_x *= pa
+        else:
+            p_x *= (1.0 - pa)
 
-    delta = sum(_exact_key_prob(int(key)) for key in exception_keys)
-    return delta if int(default_bit) == 0 else (1.0 - delta)
+    approx = (1 << len(abits)) * p_x * REPRESENTATIVE_LUT_INDICATOR_MEAN
+    return min(max(approx, 0.0), 1.0)
 
 
 def _lut_const_bit_prob_with_clk(bus, default_bit, exception_keys, bit_prob_fn, clk_name=None):

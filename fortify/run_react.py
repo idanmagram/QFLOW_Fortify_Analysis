@@ -421,7 +421,8 @@ def main(input_file_path, top_module_name, ref_module_name, ref_instance_name,
             for s in sorted(recon_only_set):
                 f.write(f"{s}\n")
         print(f"Saved Reconvergence subgraph to: {auto_subgraph_path}")
-
+        with open("s_hat_first_pass.txt", "w") as f:
+            print("s_hat", s_hat, file=f)
         # Pass 2: recompute only the recon subgraph and keep Pass-1 values outside it.
         # This avoids recalculating unaffected nodes.
         print("Pass 22")
@@ -445,8 +446,8 @@ def main(input_file_path, top_module_name, ref_module_name, ref_instance_name,
             done += 1
     print("finished calc")
 
-    #with open("s_hat.txt", "w") as f:
-    #    print("s_hat", s_hat, file=f)
+    with open("s_hat.txt", "w") as f:
+        print("s_hat", s_hat, file=f)
 
     #with open("s_hat_0.txt", "w") as f:
     #    print("s_hat_0", s_hat_0, file=f)

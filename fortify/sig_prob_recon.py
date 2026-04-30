@@ -144,20 +144,23 @@ def _bits_from_bus(bus):
 
 
 def _lut_const_bit_prob(bus, default_bit, exception_keys, bit_prob_fn):
+    #print("idan")
     abits = _bits_from_bus(bus)
     if abits is None:
         return 0.5
 
-    def _exact_key_prob(key):
-        p = 1.0
-        for idx, abit in enumerate(abits):
-            bit = (key >> idx) & 1
-            pa = bit_prob_fn(abit)
-            p *= pa if bit else (1.0 - pa)
-        return p
+    p_x = 1.0
+    for abit in abits:
+        pa = bit_prob_fn(abit)
+        p_x *= pa
+        #if pa >= 0.5:
+        #    p_x *= pa
+        #else:
+        #    p_x *= (1.0 - pa)
 
-    delta = sum(_exact_key_prob(int(key)) for key in exception_keys)
-    return delta if int(default_bit) == 0 else (1.0 - delta)
+    approx = (1 << len(abits)) * p_x * 0.5
+    #print(f"{abits} = {approx}")
+    return min(max(approx, 0.0), 1.0)
 
 
 def _lut_const_bit_prob_with_clk(bus, default_bit, exception_keys, bit_prob_fn, clk_name=None):
@@ -301,14 +304,18 @@ def prob_with_clamps_atomic(sig, truthTableMap, clamps, cache,
             default_bit = exp[2] if len(exp) > 2 else 0
             exception_keys = exp[3] if len(exp) > 3 else []
             clk_name = exp[4] if len(exp) > 4 else None
+            def _first_pass_bit_prob(bit_name):
+                if ref_name is None:
+                    return float(s_hat.get(bit_name, 0.5))
+                ref_val = clamps.get(ref_name, 0)
+                table = s_hat_0 if ref_val == 0 else s_hat_1
+                return float(table.get(bit_name, {}).get(ref_name, s_hat.get(bit_name, 0.5)))
+            #print("lut first pass")
             p = _lut_const_bit_prob_with_clk(
                 bus,
                 default_bit,
                 exception_keys,
-                lambda bit_name: prob_with_clamps_atomic(
-                    bit_name, truthTableMap, clamps, cache,
-                    s_hat, s_hat_0, s_hat_1, ref_name, visiting
-                ),
+                _first_pass_bit_prob,
                 clk_name=clk_name,
             )
             cache[key] = p
@@ -592,6 +599,7 @@ def populateSigProbs_recon_dp(signalNames, s_hat, s_hat_0, s_hat_1,
                 default_bit = expr[2] if len(expr) > 2 else 0
                 exception_keys = expr[3] if len(expr) > 3 else []
                 clk_name = expr[4] if len(expr) > 4 else None
+                #print("lut uncahed")
                 return _lut_const_bit_prob_with_clk(
                     bus,
                     default_bit,
@@ -689,7 +697,8 @@ def populateSigProbs_recon_dp(signalNames, s_hat, s_hat_0, s_hat_1,
         return p, p0, p1
 
     def _compute_signal_result(sig):
-        if sig == 'top.AES.a1.X_v1.o[0:0]':
+        if sig == 'top.AES.a1.S4_0.u0.out[0:0]' and recon_only_set != None:
+        #if sig == 'top.AES.a1.S4_0.u0.out[0:0]':
             print("hi")
         exp = truthTableMap.get(sig, None)
         if exp is None:
@@ -740,3 +749,4 @@ def populateSigProbs_recon_dp(signalNames, s_hat, s_hat_0, s_hat_1,
         if sig in s_hat:
             continue
         s_hat[sig], s_hat_0[sig], s_hat_1[sig], _ = _compute_signal_result(sig)
+
