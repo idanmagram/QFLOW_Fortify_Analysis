@@ -152,15 +152,15 @@ def _lut_const_bit_prob(bus, default_bit, exception_keys, bit_prob_fn):
     p_x = 1.0
     for abit in abits:
         pa = bit_prob_fn(abit)
-        p_x *= pa
-        #if pa >= 0.5:
-        #    p_x *= pa
-        #else:
-        #    p_x *= (1.0 - pa)
+        #p_x *= pa
+        if pa >= 0.5:
+            p_x *= pa
+        else:
+            p_x *= (1.0 - pa)
 
     approx = (1 << len(abits)) * p_x * 0.5
     #print(f"{abits} = {approx}")
-    return min(max(approx, 0.0), 1.0)
+    return min(max(approx, 0.0), 0.5)
 
 
 def _lut_const_bit_prob_with_clk(bus, default_bit, exception_keys, bit_prob_fn, clk_name=None):
