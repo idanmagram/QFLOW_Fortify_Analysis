@@ -245,8 +245,8 @@ def main(input_file_path, top_module_name, ref_module_name, ref_instance_name,
         refSigBitNames.append(f'{ref_sig_name}[{j}:{j}]')
     signalNames = set(signalNames_unrolled) | set(refSigBitNames) | set(truthTableMap.keys())
 
-    with open("truthTableMap.txt", "w") as f:
-        print("truthTableMap 1", truthTableMap, file=f)
+    #with open("truthTableMap.txt", "w") as f:
+    #    print("truthTableMap 1", truthTableMap, file=f)
 
     # input signal bits names (time-indexed to match unrolled map)
     inputSigBitNames = []
@@ -446,8 +446,8 @@ def main(input_file_path, top_module_name, ref_module_name, ref_instance_name,
             done += 1
     print("finished calc")
 
-    with open("s_hat.txt", "w") as f:
-        print("s_hat", s_hat, file=f)
+    #with open("s_hat.txt", "w") as f:
+    #    print("s_hat", s_hat, file=f)
 
     #with open("s_hat_0.txt", "w") as f:
     #    print("s_hat_0", s_hat_0, file=f)
