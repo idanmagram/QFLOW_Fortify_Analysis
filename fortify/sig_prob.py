@@ -29,7 +29,8 @@ _AES_SBOX_OUTPUT_BITS = tuple(
     tuple((AES_SBOX[value] >> bit) & 1 for bit in range(8))
     for value in range(256)
 )
-REPRESENTATIVE_LUT_INDICATOR_MEAN = 0.5
+_BUS_VALUE_PROB_CACHE = {}
+_LUT_CONST_BIT_PROB_CACHE = {}
 
 # incremental signal probability formulae for the standard logic gates
 def incSigProb(a, b, op):
@@ -74,21 +75,41 @@ def _lut_const_bit_prob(bus, default_bit, exception_keys, bit_prob_fn):
     abits = _bits_from_bus(bus)
     if abits is None:
         return 0.5
+    bit_probs = tuple(float(bit_prob_fn(abit)) for abit in abits)
+    dist_key = (len(abits), bit_probs)
+    value_probs = _BUS_VALUE_PROB_CACHE.get(dist_key)
+    if value_probs is None:
+        nbits = len(abits)
+        value_probs_list = []
+        for value in range(1 << nbits):
+            p_value = 1.0
+            for bit_idx, p_bit in enumerate(bit_probs):
+                p_value *= p_bit if ((value >> bit_idx) & 1) else (1.0 - p_bit)
+                if p_value == 0.0:
+                    break
+            value_probs_list.append(p_value)
+        value_probs = tuple(value_probs_list)
+        _BUS_VALUE_PROB_CACHE[dist_key] = value_probs
 
-    # Fast approximation requested by user:
-    # choose a single representative input byte x* from the marginals,
-    # estimate P(in=x*), and approximate the LUT output-bit indicator as a
-    # Bernoulli(0.5) random variable representative of the table outputs.
-    p_x = 1.0
-    for abit in abits:
-        pa = bit_prob_fn(abit)
-        if pa >= 0.5:
-            p_x *= pa
-        else:
-            p_x *= (1.0 - pa)
+    exception_tuple = tuple(int(v) for v in exception_keys)
+    cache_key = (dist_key, int(default_bit), exception_tuple)
+    cached = _LUT_CONST_BIT_PROB_CACHE.get(cache_key)
+    if cached is not None:
+        return cached
 
-    approx = (1 << len(abits)) * p_x * REPRESENTATIVE_LUT_INDICATOR_MEAN
-    return min(max(approx, 0.0), 1.0)
+    exception_mass = 0.0
+    for value in exception_tuple:
+        if 0 <= value < len(value_probs):
+            exception_mass += value_probs[value]
+
+    if int(default_bit):
+        prob = 1.0 - exception_mass
+    else:
+        prob = exception_mass
+
+    prob = min(max(prob, 0.0), 1.0)
+    _LUT_CONST_BIT_PROB_CACHE[cache_key] = prob
+    return prob
 
 
 def _lut_const_bit_prob_with_clk(bus, default_bit, exception_keys, bit_prob_fn, clk_name=None):
