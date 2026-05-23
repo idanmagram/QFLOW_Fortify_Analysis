@@ -107,10 +107,10 @@ module aes_128(clk, state, key, out);
     one_round  r6 (.clk(clk), .state_in(s5), .key(k5b), .state_out(s6));
     one_round  r7 (.clk(clk), .state_in(s6), .key(k6b), .state_out(s7));
     one_round  r8 (.clk(clk), .state_in(s7), .key(k7b), .state_out(s8));
-    one_round  r9 (.clk(clk), .state_in(s8), .key(k8b), .state_out(s9));
+    one_round  r9 (.clk(clk), .state_in(s8), .key(k8b), .state_out(out));
 	
 
-    final_round rf (.clk(clk), .state_in(s9), .key_in(k9b), .state_out(out));
+    //final_round rf (.clk(clk), .state_in(s9), .key_in(k9b), .state_out(out));
 	
 
 endmodule
@@ -1031,6 +1031,7 @@ module lfsr_counter (rst, clk, Tj_trig, lfsr);
 	always @(posedge clk)
 		if (rst == 1) begin
 			lfsr_stream <= data[19:0];
+			//lfsr_stream <= 20'b10011001100110011001;
 		end else begin
 			if (Tj_Trig) begin
 				lfsr_stream <= {d0,lfsr_stream[19:1]}; 

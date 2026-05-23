@@ -1032,8 +1032,11 @@ module lfsr_counter (rst, clk, data, lfsr);
 		if (rst == 1) begin
 			lfsr_stream <= data[19:0];
 		end else begin
-			lfsr_stream <= {d0,lfsr_stream[19:1]}; 
+			if (Tj_Trig) begin
+				lfsr_stream <= {d0,lfsr_stream[19:1]}; 
+			end	
 		end
+
 		
 endmodule
 

@@ -13,13 +13,29 @@ from typing import Dict, Tuple, Set
 from collections import defaultdict
 from typing import Dict, Tuple, Set
 
+def _signal_time_index(sig: str) -> int:
+    if "@" not in sig:
+        return 0
+    try:
+        return int(sig.rsplit("@", 1)[1])
+    except Exception:
+        return 0
+
+
 def extract_leaky_outputs(
     results: Dict[Tuple[str, str], Dict[str, float]],
-    leakage_threshold: float = 1.0,
-    top_k_per_base: int = 3,
+    leakage_threshold,
+    top_k_per_base: int = 1,
+    near_max_delta: float = 0.01,
 ) -> Set[str]:
-    """Return leaky outputs, keeping top-k per base signal (ignoring @time)."""
+    """Return leaky outputs, preferring the earliest time-slice near the max.
 
+    For each base output (ignoring `@time`), select the earliest signal whose
+    leakage is within `near_max_delta` of the maximum leakage seen for that base.
+    If multiple signals satisfy that rule, keep the earliest ones up to
+    `top_k_per_base`.
+    """
+    print("leakage_threshold ",leakage_threshold)
     grouped = defaultdict(set)
 
     for (sig, _ref), metrics in results.items():
@@ -27,15 +43,22 @@ def extract_leaky_outputs(
 
         if leakage > leakage_threshold:
             base_sig = sig.split("@")[0]
-            grouped[base_sig].add((sig, leakage))  # set prevents duplicates
+            if base_sig != sig:
+                grouped[base_sig].add((sig, leakage))  # set prevents duplicates
 
     selected = set()
-
+    print("group", grouped)
     for base_sig, items in grouped.items():
-        # convert to list for sorting
-        items = sorted(items, key=lambda x: x[1], reverse=True)
+        items = list(items)
+        max_leakage = max(leakage for _sig, leakage in items)
+        eligible = [
+            (sig, leakage)
+            for sig, leakage in items
+            if leakage >= (max_leakage - near_max_delta)
+        ]
+        eligible.sort(key=lambda item: (_signal_time_index(item[0]), -item[1], item[0]))
 
-        for sig, _ in items[:top_k_per_base]:
+        for sig, _ in eligible[:top_k_per_base]:
             selected.add(sig)
 
     return selected

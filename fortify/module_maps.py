@@ -436,6 +436,63 @@ def getSigName(ast, instance_name):
         sigName = utils.verilogIntConstToInt(ast)
     elif isinstance(ast, vast.Concat):
         sigName = [getSigName(x, instance_name) for x in ast.list[::-1]]
+    elif isinstance(ast, vast.Repeat):
+        try:
+            rep_count = utils.verilogIntConstToInt(ast.times)
+        except Exception:
+            rep_count = 1
+        repeated = getSigName(ast.value, instance_name)
+        sigName = []
+        for _ in range(max(rep_count, 0)):
+            if isinstance(repeated, list) and repeated and isinstance(repeated[0], str) and repeated[0] in (
+                "Cond", "Srl", "Plus", "Or", "And", "Xor", "Eq", "NotEq", "Sll", "Not", "EqBus", "EqVec",
+                "Nand", "Nor", "LutConstBit", "Times", "Minus"
+            ):
+                sigName.append(copy.deepcopy(repeated))
+            else:
+                if isinstance(repeated, list):
+                    sigName.extend(copy.deepcopy(repeated))
+                else:
+                    sigName.append(copy.deepcopy(repeated))
+    elif isinstance(ast, vast.Uand):
+        operand = getSigName(ast.right, instance_name)
+
+        def _operand_bits(expr):
+            if isinstance(expr, int):
+                return [expr]
+            if isinstance(expr, str):
+                if "[" in expr and ":" in expr and expr.endswith("]"):
+                    try:
+                        base = expr.split("[", 1)[0]
+                        rng = expr.split("[", 1)[1].split("]")[0]
+                        msb, lsb = map(int, rng.split(":"))
+                        return [f"{base}[{i}:{i}]" for i in range(lsb, msb + 1)]
+                    except Exception:
+                        pass
+                width = sigWidths.get(expr.split("[", 1)[0], 1)
+                return [f"{expr.split('[', 1)[0]}[{i}:{i}]" for i in range(width)]
+            if isinstance(expr, list):
+                if not expr:
+                    return []
+                if isinstance(expr[0], str) and expr[0] in (
+                    "Cond", "Srl", "Plus", "Or", "And", "Xor", "Eq", "NotEq", "Sll", "Not", "EqBus", "EqVec",
+                    "Nand", "Nor", "LutConstBit", "Times", "Minus"
+                ):
+                    return [expr]
+                out = []
+                for item in expr:
+                    out.extend(_operand_bits(item))
+                return out
+            return [expr]
+
+        bits = _operand_bits(operand)
+        if not bits:
+            sigName = 0
+        else:
+            acc = bits[0]
+            for bit in bits[1:]:
+                acc = ['And', acc, bit]
+            sigName = acc
     else:
         sigName = '{}.{}'.format(instance_name, ast)
         width = sigWidths.get(sigName, 1)
@@ -446,33 +503,101 @@ def getSigName(ast, instance_name):
 
 # getting the list of rhs signal names from the signal name and its low, high indices
 def getRnamesExpr(rname, low, high):
+    def _bits_from_signal_name(sig):
+        if not isinstance(sig, str):
+            return None
+        if "[" in sig and ":" in sig and sig.endswith("]"):
+            try:
+                base = sig.split("[", 1)[0]
+                rng = sig.split("[", 1)[1].split("]")[0]
+                msb, lsb = map(int, rng.split(":"))
+                return [f"{base}[{i}:{i}]" for i in range(lsb, msb + 1)]
+            except Exception:
+                return None
+        width = sigWidths.get(sig, None)
+        if isinstance(width, int) and width > 0:
+            return [f"{sig}[{i}:{i}]" for i in range(width)]
+        return None
+
+    def _bit_at(expr, idx):
+        if isinstance(expr, int):
+            return (expr >> (idx - low)) & 1
+        if isinstance(expr, str):
+            bits = _bits_from_signal_name(expr)
+            if bits is None:
+                return expr
+            rel = idx - low
+            if 0 <= rel < len(bits):
+                return bits[rel]
+            return 0
+        if not isinstance(expr, list) or not expr:
+            return expr
+
+        op = expr[0] if isinstance(expr[0], str) else None
+        if op in ("Or", "And", "Xor", "Eq", "NotEq", "Sll", "Srl", "Plus", "Times", "Minus"):
+            left = expr[1] if len(expr) > 1 else 0
+            right = expr[2] if len(expr) > 2 else 0
+            return [op, _bit_at(left, idx), _bit_at(right, idx)]
+        if op == "Not":
+            return ["Not", _bit_at(expr[1], idx)]
+        if op == "Cond":
+            tval = expr[2] if len(expr) > 2 else 0
+            fval = expr[3] if len(expr) > 3 else 0
+            return ["Cond", expr[1], _bit_at(tval, idx), _bit_at(fval, idx)]
+        if op == "EqBus":
+            return expr
+        if op == "EqVec":
+            return expr
+        if op == "LutConstBit":
+            return expr
+
+        flat_bits = []
+        for part in expr:
+            part_bits = _bits_from_signal_name(part) if isinstance(part, str) else None
+            if part_bits is not None:
+                flat_bits.extend(part_bits)
+            elif isinstance(part, int):
+                flat_bits.append(part)
+            elif isinstance(part, list):
+                flat_bits.extend(_flatten_bits(part))
+            else:
+                flat_bits.append(part)
+        rel = idx - low
+        if 0 <= rel < len(flat_bits):
+            return flat_bits[rel]
+        return 0
+
+    def _flatten_bits(expr):
+        if isinstance(expr, int):
+            return [expr]
+        if isinstance(expr, str):
+            bits = _bits_from_signal_name(expr)
+            return bits if bits is not None else [expr]
+        if not isinstance(expr, list) or not expr:
+            return [expr]
+        if isinstance(expr[0], str) and expr[0] in (
+            "Or", "And", "Xor", "Eq", "NotEq", "Sll", "Srl", "Plus", "Times", "Minus", "Cond", "Not",
+            "EqBus", "EqVec", "LutConstBit"
+        ):
+            return [expr]
+        out = []
+        for part in expr:
+            out.extend(_flatten_bits(part))
+        return out
+
     if not isinstance(rname, list):
         rbase = int(rname.split("]")[0].split(":")[1])
         return ['{}[{}:{}]'.format(rname.split('[')[0], rbase + i - low, rbase + i - low) for i in range(low, high + 1)]
 
-    rnames = [rname[0]]
-    rbase_1 = 0
-    rbase_2 = 0
+    if rname and isinstance(rname[0], str) and rname[0] in (
+        "Or", "And", "Xor", "Eq", "NotEq", "Sll", "Srl", "Plus", "Times", "Minus"
+    ):
+        return [rname[0], [_bit_at(rname[1], i) for i in range(low, high + 1)],
+                [_bit_at(rname[2], i) for i in range(low, high + 1)]]
+    if rname and isinstance(rname[0], str) and rname[0] == "Not":
+        return ["Not", [_bit_at(rname[1], i) for i in range(low, high + 1)]]
 
-    if isinstance(rname[1], int):
-        bitVals1 = [int(x) for x in format(rname[1], str('0' + str(high - low + 1) + 'b'))]
-        bitVals1.reverse()
-        rnames.append(bitVals1)
-    else:
-        rbase_1 = int(rname[1].split("]")[0].split(":")[1])
-        rnames.append(['{}[{}:{}]'.format(rname[1].split('[')[0], rbase_1 + i - low, rbase_1 + i - low) for i in
-                       range(low, high + 1)])
-
-    if isinstance(rname[2], int):
-        bitVals2 = [int(x) for x in format(rname[2], str('0' + str(high - low + 1) + 'b'))]
-        bitVals2.reverse()
-        rnames.append(bitVals2)
-    else:
-        rbase_2 = int(rname[2].split("]")[0].split(":")[1])
-        rnames.append(['{}[{}:{}]'.format(rname[2].split('[')[0], rbase_2 + i - low, rbase_2 + i - low) for i in
-                       range(low, high + 1)])
-
-    return rnames
+    return [_bit_at(rname, i) for i in range(low, high + 1)]
 
 
 def _collect_nonblocking_nodes(ast):

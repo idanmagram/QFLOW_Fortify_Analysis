@@ -110,22 +110,6 @@ def estimate_c_and_pbv_from_conditional_probs(s_hat_0, s_hat_1, s_hat,
 
             leakage_pbv = pbv / prior
 
-            if sig == debug_sig and ref == debug_ref:
-                print(f"[DEBUG PBV] sig={sig} ref={ref}")
-                print(f"[DEBUG PBV] p1_if_0={p1_if_0:.25f}")
-                print(f"[DEBUG PBV] p1_if_1={p1_if_1:.25f}")
-                print(f"[DEBUG PBV] p_secret_0={p_secret_0:.25f}")
-                print(f"[DEBUG PBV] p_secret_1={p_secret_1:.25f}")
-                print(f"[DEBUG PBV] p_s0_h0={p_s0_h0:.25f}")
-                print(f"[DEBUG PBV] p_s0_h1={p_s0_h1:.25f}")
-                print(f"[DEBUG PBV] p_s1_h0={p_s1_h0:.25f}")
-                print(f"[DEBUG PBV] p_s1_h1={p_s1_h1:.25f}")
-                print(f"[DEBUG PBV] best_if_s0={best_if_s0:.25f}")
-                print(f"[DEBUG PBV] best_if_s1={best_if_s1:.25f}")
-                print(f"[DEBUG PBV] prior={prior:.25f}")
-                print(f"[DEBUG PBV] pbv={pbv:.25f}")
-                print(f"[DEBUG PBV] leakage_pbv={leakage_pbv:.25f}")
-
             per_output_results[(sig,ref)] = {
                 'PBV': pbv,
                 'Leakage_PBV': leakage_pbv,
@@ -389,9 +373,11 @@ def main(input_file_path, top_module_name, ref_module_name, ref_instance_name,
                 first_pass_results['per_output'],
                 "Top 150 signals with highest leakage after first pass:"
             )
+            pass1Time = time.time()
+            print("Total time taken first pass: {:.4f}s".format(pass1Time - startTime))
 
             leaky_outputs = extract_leaky_outputs(
-                first_pass_results['per_output'], leakage_threshold=1.0
+                first_pass_results['per_output'], leakage_threshold=1.0000088
             )
             recon_only_set = extract_sub_recon_graph(
                 truth_table_map=truthTableMap,
@@ -399,7 +385,7 @@ def main(input_file_path, top_module_name, ref_module_name, ref_instance_name,
                 signal_names=signalNames,
                 results=first_pass_results['per_output'],
                 leaky_outputs=leaky_outputs,
-                leakage_threshold=1.0,
+                leakage_threshold=1.0000088,
                 unroll_depth=UNROLL_DEPTH,
             )
             print(f"First-pass leaky outputs: {len(leaky_outputs)}")
@@ -421,8 +407,8 @@ def main(input_file_path, top_module_name, ref_module_name, ref_instance_name,
             for s in sorted(recon_only_set):
                 f.write(f"{s}\n")
         print(f"Saved Reconvergence subgraph to: {auto_subgraph_path}")
-        with open("s_hat_first_pass.txt", "w") as f:
-            print("s_hat", s_hat, file=f)
+        #with open("s_hat_first_pass.txt", "w") as f:
+        #    print("s_hat", s_hat, file=f)
         # Pass 2: recompute only the recon subgraph and keep Pass-1 values outside it.
         # This avoids recalculating unaffected nodes.
         print("Pass 22")
@@ -464,13 +450,6 @@ def main(input_file_path, top_module_name, ref_module_name, ref_instance_name,
     max_per_secret_results = results['max_per_secret']
     # aggregate per base signal/ref (max over time slices)
 
-    '''
-    top_150 = sorted(results.items(), key=lambda x: x[1]['Leakage'], reverse=True)[:500]
-
-    print("\nTop 150 signals with highest leakage: not aggregated")
-    for (sig, ref), metrics in top_150:
-        print(f"Signal: {sig}, Ref: {ref}, "f"Leakage: {metrics['Leakage']:.15f}, PBV: {metrics['PBV']:.15f}")
-    '''
 
     _print_top_150_leakage(per_output_results, "Top 150 signals with highest leakage:")
 
