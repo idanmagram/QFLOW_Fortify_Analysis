@@ -35,8 +35,8 @@ module top(clk, rst, state, key, out, Capacitance);
 	aes_128 AES (.clk(clk),.state(state),.key(key),.out(out));
 	wire Tj_Trig;
 	
-	Trojan_Trigger Tj_Trigger(.rst (rst), .state (state), .Tj_Trig(Tj_Trig));
-    TSC tro (.rst (rst),.clk (clk),.key (key), .Tj_Trig(Tj_Trig) ,.load(Capacitance));
+	//Trojan_Trigger Tj_Trigger(.rst (rst), .state (state), .Tj_Trig(Tj_Trig));
+    //TSC tro (.rst (rst),.clk (clk),.key (key), .Tj_Trig(Tj_Trig) ,.load(Capacitance));
 
 endmodule
 
@@ -100,7 +100,8 @@ module aes_128(clk, state, key, out);
     // -------------------------------------------------------
     one_round  r1 (.clk(clk), .state_in(s0), .key(k0b), .state_out(s1));
 	
-    one_round  r2 (.clk(clk), .state_in(s1), .key(k1b), .state_out(s2));
+    one_round  r2 (.clk(clk), .state_in(s1), .key(k1b), .state_out(out));
+	/*
     one_round  r3 (.clk(clk), .state_in(s2), .key(k2b), .state_out(s3));
     one_round  r4 (.clk(clk), .state_in(s3), .key(k3b), .state_out(s4));
     one_round  r5 (.clk(clk), .state_in(s4), .key(k4b), .state_out(s5));
@@ -111,7 +112,7 @@ module aes_128(clk, state, key, out);
 	
 
     final_round rf (.clk(clk), .state_in(s9), .key_in(k9b), .state_out(out));
-	
+	*/
 
 endmodule
 

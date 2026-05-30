@@ -25,7 +25,7 @@ def _signal_time_index(sig: str) -> int:
 def extract_leaky_outputs(
     results: Dict[Tuple[str, str], Dict[str, float]],
     leakage_threshold,
-    top_k_per_base: int = 1,
+    top_k_per_base: int = 3,
     near_max_delta: float = 0.01,
 ) -> Set[str]:
     """Return leaky outputs, preferring the earliest time-slice near the max.
@@ -35,7 +35,10 @@ def extract_leaky_outputs(
     If multiple signals satisfy that rule, keep the earliest ones up to
     `top_k_per_base`.
     """
+    '''
     print("leakage_threshold ",leakage_threshold)
+    print("top_k_per_base ",top_k_per_base)
+    #print("results ",results)
     grouped = defaultdict(set)
 
     for (sig, _ref), metrics in results.items():
@@ -43,8 +46,8 @@ def extract_leaky_outputs(
 
         if leakage > leakage_threshold:
             base_sig = sig.split("@")[0]
-            if base_sig != sig:
-                grouped[base_sig].add((sig, leakage))  # set prevents duplicates
+            #if base_sig != sig:
+            grouped[base_sig].add((sig, leakage))  # set prevents duplicates
 
     selected = set()
     print("group", grouped)
@@ -60,8 +63,35 @@ def extract_leaky_outputs(
 
         for sig, _ in eligible[:top_k_per_base]:
             selected.add(sig)
+    print("selected ", selected, " top_k_per_base ",top_k_per_base)
+    if len(selected) > 1:
+        timed_bases = {sig.split("@")[0] for sig in selected if "@" in sig}
+        selected = {
+            sig for sig in selected if ("@" in sig) or (sig not in timed_bases)
+        }
+    return selected
+    '''
+    print("leakage_threshold ", leakage_threshold)
+    grouped = defaultdict(set)
+
+    for (sig, _ref), metrics in results.items():
+        leakage = metrics.get("Leakage_PBV", 0.0)
+
+        if leakage > leakage_threshold:
+            base_sig = sig.split("@")[0]
+            grouped[base_sig].add((sig, leakage))  # set prevents duplicates
+
+    selected = set()
+
+    for base_sig, items in grouped.items():
+        # convert to list for sorting
+        items = sorted(items, key=lambda x: x[1], reverse=True)
+
+        for sig, _ in items[:top_k_per_base]:
+            selected.add(sig)
 
     return selected
+
 
 def _extract_signal_names(exp, self_name=None):
     if isinstance(exp, int):

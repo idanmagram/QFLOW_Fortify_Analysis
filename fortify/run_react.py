@@ -201,7 +201,8 @@ def estimate_c_and_pbv_from_conditional_probs1(s_hat_0, s_hat_1, s_hat,
 
 def main(input_file_path, top_module_name, ref_module_name, ref_instance_name,
          ref_sig_name, ref_sig_width, design, leaks_file_path, time_file_path,
-         reconvergence_aware=False, subgraph_path=None, reconvergence_algorithm="dp"):
+         reconvergence_aware=False, subgraph_path=None, reconvergence_algorithm="dp",
+         max_shared_ancestors=4):
     startTime = time.time()
 
     print("\n ******************************************************************")
@@ -229,8 +230,8 @@ def main(input_file_path, top_module_name, ref_module_name, ref_instance_name,
         refSigBitNames.append(f'{ref_sig_name}[{j}:{j}]')
     signalNames = set(signalNames_unrolled) | set(refSigBitNames) | set(truthTableMap.keys())
 
-    #with open("truthTableMap.txt", "w") as f:
-    #    print("truthTableMap 1", truthTableMap, file=f)
+    with open("truthTableMap.txt", "w") as f:
+        print("truthTableMap 1", truthTableMap, file=f)
 
     # input signal bits names (time-indexed to match unrolled map)
     inputSigBitNames = []
@@ -364,7 +365,8 @@ def main(input_file_path, top_module_name, ref_module_name, ref_instance_name,
             recon_populate_fn(
                 signalNames, s_hat, s_hat_0, s_hat_1,
                 truthTableMap, refSigBitNames, inputSigBitNames, sigWidths,
-                graph_artifacts=graph_artifacts
+                graph_artifacts=graph_artifacts,
+                max_shared_ancestors=max_shared_ancestors,
             )
             first_pass_results = estimate_c_and_pbv_from_conditional_probs(
                 s_hat_0, s_hat_1, s_hat, refSigBitNames, signalNames,
@@ -375,6 +377,24 @@ def main(input_file_path, top_module_name, ref_module_name, ref_instance_name,
             )
             pass1Time = time.time()
             print("Total time taken first pass: {:.4f}s".format(pass1Time - startTime))
+            max_per_secret_results = first_pass_results['max_per_secret']
+
+            print("\nL_max(H) across all selected outputs pass 1:\n")
+            sorted_max_per_secret = sorted(
+                (
+                    (ref, metrics)
+                    for ref, metrics in max_per_secret_results.items()
+                    if metrics['Leakage_PBV'] > 1.0
+                ),
+                key=lambda item: item[1]['Leakage_PBV'],
+                reverse=True,
+            )
+            for ref, metrics in sorted_max_per_secret:
+                print(
+                    f"Ref: {ref}, L_max: {metrics['Leakage_PBV']:.25f}, "
+                    f"argmax_output: {metrics['argmax_output']}"
+                )
+            print()
 
             leaky_outputs = extract_leaky_outputs(
                 first_pass_results['per_output'], leakage_threshold=1.0000088
@@ -420,9 +440,11 @@ def main(input_file_path, top_module_name, ref_module_name, ref_instance_name,
         recon_populate_fn(
             signalNames, s_hat, s_hat_0, s_hat_1,
             truthTableMap, refSigBitNames, inputSigBitNames, sigWidths,
-            recon_only_set=recon_only_set, graph_artifacts=graph_artifacts
+            recon_only_set=recon_only_set, graph_artifacts=graph_artifacts,
+            max_shared_ancestors=max_shared_ancestors,
         )
     else:
+        '''
         for sig in tqdm(signalNames, desc="Signal Probability Calculation"):
             if sig not in s_hat:
                 sig_prob_recon.populateSigProbs_recon_dp(
@@ -430,6 +452,12 @@ def main(input_file_path, top_module_name, ref_module_name, ref_instance_name,
                     truthTableMap, refSigBitNames, inputSigBitNames, sigWidths,
                     graph_artifacts=graph_artifacts)
             done += 1
+        '''
+        sig_prob_recon.populateSigProbs_recon_dp(
+            signalNames, s_hat, s_hat_0, s_hat_1,
+            truthTableMap, refSigBitNames, inputSigBitNames, sigWidths,
+            graph_artifacts=graph_artifacts,
+            max_shared_ancestors=max_shared_ancestors)
     print("finished calc")
 
     #with open("s_hat.txt", "w") as f:
@@ -496,6 +524,8 @@ if __name__ == '__main__':
                            help='reconvergence algorithm to use with --reconvergence-aware')
     my_parser.add_argument('--subgraph-path', type=str, action='store',
                            help='path to subgraph nodes (one per line) to limit reconvergence')
+    my_parser.add_argument('--max-shared-ancestors', type=int, default=4,
+                           help='maximum number of shared ancestors to condition on during reconvergence')
     my_parser.add_argument('-r', '--results-path', type=str, action='store',
                            help='name of directory within results/ directory to store results')
 
@@ -527,5 +557,6 @@ if __name__ == '__main__':
          args.RefSigName, args.RefSigWidth, args.Design, leaks_file_path, time_file_path,
          reconvergence_aware=args.reconvergence_aware,
          subgraph_path=args.subgraph_path,
-         reconvergence_algorithm=args.reconvergence_algorithm)
+         reconvergence_algorithm=args.reconvergence_algorithm,
+         max_shared_ancestors=args.max_shared_ancestors)
     print("Runtime:", time.time() - start, "seconds")

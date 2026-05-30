@@ -12,6 +12,8 @@ LOWERABLE_OPS = {
     "EqVec", "EqBus"
 }
 
+MAX_SHARED_ANCESTORS=4
+
 
 def lower_truth_table_map(truth_table_map):
     """Lower nested expression trees into named intermediate nodes.
@@ -416,7 +418,8 @@ def gate_prob_recon_dp(op, a, b, Z, truthTableMap, clamps,
 
 def populateSigProbs_recon_dp(signalNames, s_hat, s_hat_0, s_hat_1,
                               truthTableMap, refSigBitNames, inputSigBitNames, sigWidths,
-                              recon_only_set=None, graph_artifacts=None):
+                              recon_only_set=None, graph_artifacts=None,
+                              max_shared_ancestors=MAX_SHARED_ANCESTORS):
     if graph_artifacts is None:
         graph_artifacts = build_recon_graph_artifacts(signalNames, truthTableMap)
     parents = graph_artifacts["parents"]
@@ -733,9 +736,12 @@ def populateSigProbs_recon_dp(signalNames, s_hat, s_hat_0, s_hat_1,
                         return 1.0, {ref: 1.0 for ref in refSigBitNames}, {ref: 1.0 for ref in refSigBitNames}, True
 
                 shared_primary_inputs = _shared_primary_input_parents(a, b)
-                if (recon_only_set is not None) and (sig in recon_only_set) and shared_primary_inputs:
-                    print("sig ",sig," shared_primary_inputs ",shared_primary_inputs)
-                    p, p0, p1 = _compute_recon_tables(op, a, b, sorted(shared_primary_inputs))
+                if (recon_only_set is not None) and (sig in recon_only_set) and shared_primary_inputs and shared_primary_inputs != {'top.clk[0:0]'}:
+                    #print("sig ",sig," shared_primary_inputs ",shared_primary_inputs, " from a ",a," and ",b)
+                    shared_primary_inputs = sorted(shared_primary_inputs - {'top.clk[0:0]'})
+                    shared_primary_inputs = shared_primary_inputs[:max_shared_ancestors]
+                    print("sig ",sig," shared_primary_inputs ",shared_primary_inputs, " from a ",a," and ",b)
+                    p, p0, p1 = _compute_recon_tables(op, a, b, shared_primary_inputs)
                     return p, p0, p1, True
 
             p, p0, p1 = _compute_expr_tables(exp)
