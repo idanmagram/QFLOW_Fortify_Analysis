@@ -50,7 +50,6 @@ module aes_128(clk, state, key, out);
     // -------------------------------------------------------
     // KEY EXPANSION (10 rounds) — ONE LINE EACH
     // -------------------------------------------------------
-	//assign out = state ^ key;
     expand_key_128 a1  (.clk(clk), .in(k0),  .out_1(k1),  .out_2(k0b), .rcon(8'h01));
 	
     expand_key_128 a2  (.clk(clk), .in(k1),  .out_1(k2),  .out_2(k1b), .rcon(8'h02));
@@ -72,7 +71,6 @@ module aes_128(clk, state, key, out);
     // -------------------------------------------------------
     // ROUND FUNCTIONS (10 rounds, one per line)
     // -------------------------------------------------------
-	//assign out = k1;
     one_round  r1 (.clk(clk), .state_in(s0), .key(k0b), .state_out(s1));
 	
     one_round  r2 (.clk(clk), .state_in(s1), .key(k1b), .state_out(s2));

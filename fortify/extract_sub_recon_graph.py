@@ -25,7 +25,7 @@ def _signal_time_index(sig: str) -> int:
 def extract_leaky_outputs(
     results: Dict[Tuple[str, str], Dict[str, float]],
     leakage_threshold,
-    top_k_per_base: int = 3,
+    top_k_per_base: int = 1,
     near_max_delta: float = 0.01,
 ) -> Set[str]:
     """Return leaky outputs, preferring the earliest time-slice near the max.
@@ -35,43 +35,9 @@ def extract_leaky_outputs(
     If multiple signals satisfy that rule, keep the earliest ones up to
     `top_k_per_base`.
     """
-    '''
-    print("leakage_threshold ",leakage_threshold)
-    print("top_k_per_base ",top_k_per_base)
-    #print("results ",results)
-    grouped = defaultdict(set)
 
-    for (sig, _ref), metrics in results.items():
-        leakage = metrics.get("Leakage_PBV", 0.0)
-
-        if leakage > leakage_threshold:
-            base_sig = sig.split("@")[0]
-            #if base_sig != sig:
-            grouped[base_sig].add((sig, leakage))  # set prevents duplicates
-
-    selected = set()
-    print("group", grouped)
-    for base_sig, items in grouped.items():
-        items = list(items)
-        max_leakage = max(leakage for _sig, leakage in items)
-        eligible = [
-            (sig, leakage)
-            for sig, leakage in items
-            if leakage >= (max_leakage - near_max_delta)
-        ]
-        eligible.sort(key=lambda item: (_signal_time_index(item[0]), -item[1], item[0]))
-
-        for sig, _ in eligible[:top_k_per_base]:
-            selected.add(sig)
-    print("selected ", selected, " top_k_per_base ",top_k_per_base)
-    if len(selected) > 1:
-        timed_bases = {sig.split("@")[0] for sig in selected if "@" in sig}
-        selected = {
-            sig for sig in selected if ("@" in sig) or (sig not in timed_bases)
-        }
-    return selected
-    '''
-    print("leakage_threshold ", leakage_threshold)
+    print("leakage_threshold z", leakage_threshold)
+    print("top_k_per_base ", top_k_per_base)
     grouped = defaultdict(set)
 
     for (sig, _ref), metrics in results.items():
@@ -81,6 +47,7 @@ def extract_leaky_outputs(
             base_sig = sig.split("@")[0]
             grouped[base_sig].add((sig, leakage))  # set prevents duplicates
 
+    print("grouped ", (grouped))
     selected = set()
 
     for base_sig, items in grouped.items():
@@ -191,6 +158,7 @@ def extract_sub_recon_graph(
             leaky_outputs_set = extract_leaky_outputs(
                 results, leakage_threshold=leakage_threshold
             )
+            print("leaky_outputs_set =", leaky_outputs_set)
 
             #leaky_outputs_set.add("top.Antena[0:0]@0")
     else:

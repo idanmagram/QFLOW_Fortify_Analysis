@@ -202,7 +202,7 @@ def estimate_c_and_pbv_from_conditional_probs1(s_hat_0, s_hat_1, s_hat,
 def main(input_file_path, top_module_name, ref_module_name, ref_instance_name,
          ref_sig_name, ref_sig_width, design, leaks_file_path, time_file_path,
          reconvergence_aware=False, subgraph_path=None, reconvergence_algorithm="dp",
-         max_shared_ancestors=4):
+         max_shared_ancestors=4, top_k_per_base=1):
     startTime = time.time()
 
     print("\n ******************************************************************")
@@ -230,8 +230,8 @@ def main(input_file_path, top_module_name, ref_module_name, ref_instance_name,
         refSigBitNames.append(f'{ref_sig_name}[{j}:{j}]')
     signalNames = set(signalNames_unrolled) | set(refSigBitNames) | set(truthTableMap.keys())
 
-    with open("truthTableMap.txt", "w") as f:
-        print("truthTableMap 1", truthTableMap, file=f)
+    #with open("truthTableMap.txt", "w") as f:
+    #    print("truthTableMap 1", truthTableMap, file=f)
 
     # input signal bits names (time-indexed to match unrolled map)
     inputSigBitNames = []
@@ -395,9 +395,10 @@ def main(input_file_path, top_module_name, ref_module_name, ref_instance_name,
                     f"argmax_output: {metrics['argmax_output']}"
                 )
             print()
-
+            print("top_k_per_base ", top_k_per_base)
             leaky_outputs = extract_leaky_outputs(
-                first_pass_results['per_output'], leakage_threshold=1.0000088
+                first_pass_results['per_output'], leakage_threshold=1.0000088,
+                top_k_per_base=top_k_per_base,
             )
             recon_only_set = extract_sub_recon_graph(
                 truth_table_map=truthTableMap,
@@ -432,6 +433,7 @@ def main(input_file_path, top_module_name, ref_module_name, ref_instance_name,
         # Pass 2: recompute only the recon subgraph and keep Pass-1 values outside it.
         # This avoids recalculating unaffected nodes.
         print("Pass 22")
+        reconPassStart = time.time()
         for sig in recon_only_set:
             s_hat.pop(sig, None)
             s_hat_0.pop(sig, None)
@@ -443,6 +445,8 @@ def main(input_file_path, top_module_name, ref_module_name, ref_instance_name,
             recon_only_set=recon_only_set, graph_artifacts=graph_artifacts,
             max_shared_ancestors=max_shared_ancestors,
         )
+        reconPassEnd = time.time()
+        print("Total time taken reconvergence pass: {:.4f}s".format(reconPassEnd - reconPassStart))
     else:
         '''
         for sig in tqdm(signalNames, desc="Signal Probability Calculation"):
@@ -526,6 +530,8 @@ if __name__ == '__main__':
                            help='path to subgraph nodes (one per line) to limit reconvergence')
     my_parser.add_argument('--max-shared-ancestors', type=int, default=4,
                            help='maximum number of shared ancestors to condition on during reconvergence')
+    my_parser.add_argument('--top-k-per-base', type=int, default=1,
+                           help='number of leaky time-slices to keep per base output during subgraph extraction')
     my_parser.add_argument('-r', '--results-path', type=str, action='store',
                            help='name of directory within results/ directory to store results')
 
@@ -558,5 +564,6 @@ if __name__ == '__main__':
          reconvergence_aware=args.reconvergence_aware,
          subgraph_path=args.subgraph_path,
          reconvergence_algorithm=args.reconvergence_algorithm,
-         max_shared_ancestors=args.max_shared_ancestors)
+         max_shared_ancestors=args.max_shared_ancestors,
+         top_k_per_base=args.top_k_per_base)
     print("Runtime:", time.time() - start, "seconds")
