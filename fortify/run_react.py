@@ -26,6 +26,22 @@ def _get_cached_uniform(cache, key):
         cache[key] = random.choice([0.0, 1.0])
     return cache[key]
 
+
+def _normalized_leakage_from_pbv(pbv, prior):
+    """Map multiplicative Bayes leakage to a 0..1 scale."""
+    if prior <= 0.0 or prior >= 1.0:
+        return 0.0
+
+    multiplicative = pbv / prior
+    max_multiplicative = 1.0 / prior
+    denom = max_multiplicative - 1.0
+    if denom <= 0.0:
+        return 0.0
+
+    leakage = (multiplicative - 1.0) / denom
+    return max(0.0, min(1.0, leakage))
+
+
 def estimate_c_and_pbv_from_conditional_probs(s_hat_0, s_hat_1, s_hat,
                                               refSigBitNames, signalNames,
                                               target_signals=None):
@@ -108,7 +124,7 @@ def estimate_c_and_pbv_from_conditional_probs(s_hat_0, s_hat_1, s_hat,
             # 5. Leakage
             # ----------------------------------
 
-            leakage_pbv = pbv / prior
+            leakage_pbv = _normalized_leakage_from_pbv(pbv, prior)
 
             per_output_results[(sig,ref)] = {
                 'PBV': pbv,
@@ -192,8 +208,9 @@ def estimate_c_and_pbv_from_conditional_probs1(s_hat_0, s_hat_1, s_hat,
                 joint_J[y][1] = prior_1 * channel_C[1][y]
 
             pbv = sum(max(joint_J[y][0], joint_J[y][1]) for y in [0, 1])
-            leakage = pbv / max(prior_0, prior_1)
-            results[(sig, ref)] = {'PBV': pbv, 'Leakage': leakage, 'prior': max(prior_0, prior_1)}
+            prior = max(prior_0, prior_1)
+            leakage = _normalized_leakage_from_pbv(pbv, prior)
+            results[(sig, ref)] = {'PBV': pbv, 'Leakage': leakage, 'prior': prior}
             #print()
             #print('PBV', pbv, 'Leakage', leakage)
 
@@ -208,6 +225,7 @@ def main(input_file_path, top_module_name, ref_module_name, ref_instance_name,
     print("\n ******************************************************************")
     print("Design:", design, "\n")
     os.environ["PATH"] = r"C:\iverilog\bin;" + os.environ["PATH"]
+    module_maps.set_arith_carry_limit(0)
 
     # static analysis → graph + subcircuit
     (inputNames, inputWidths,
@@ -230,8 +248,8 @@ def main(input_file_path, top_module_name, ref_module_name, ref_instance_name,
         refSigBitNames.append(f'{ref_sig_name}[{j}:{j}]')
     signalNames = set(signalNames_unrolled) | set(refSigBitNames) | set(truthTableMap.keys())
 
-    #with open("truthTableMap.txt", "w") as f:
-    #    print("truthTableMap 1", truthTableMap, file=f)
+    with open("truthTableMap.txt", "w") as f:
+        print("truthTableMap 1", truthTableMap, file=f)
 
     # input signal bits names (time-indexed to match unrolled map)
     inputSigBitNames = []
@@ -384,7 +402,7 @@ def main(input_file_path, top_module_name, ref_module_name, ref_instance_name,
                 (
                     (ref, metrics)
                     for ref, metrics in max_per_secret_results.items()
-                    if metrics['Leakage_PBV'] > 1.0
+                    if metrics['Leakage_PBV'] > 0.0
                 ),
                 key=lambda item: item[1]['Leakage_PBV'],
                 reverse=True,
@@ -397,7 +415,7 @@ def main(input_file_path, top_module_name, ref_module_name, ref_instance_name,
             print()
             print("top_k_per_base ", top_k_per_base)
             leaky_outputs = extract_leaky_outputs(
-                first_pass_results['per_output'], leakage_threshold=1.0000088,
+                first_pass_results['per_output'], leakage_threshold=0.0000088,
                 top_k_per_base=top_k_per_base,
             )
             recon_only_set = extract_sub_recon_graph(
@@ -406,7 +424,7 @@ def main(input_file_path, top_module_name, ref_module_name, ref_instance_name,
                 signal_names=signalNames,
                 results=first_pass_results['per_output'],
                 leaky_outputs=leaky_outputs,
-                leakage_threshold=1.0000088,
+                leakage_threshold=0.0000088,
                 unroll_depth=UNROLL_DEPTH,
             )
             print(f"First-pass leaky outputs: {len(leaky_outputs)}")
@@ -490,7 +508,7 @@ def main(input_file_path, top_module_name, ref_module_name, ref_instance_name,
         (
             (ref, metrics)
             for ref, metrics in max_per_secret_results.items()
-            if metrics['Leakage_PBV'] > 1.0
+            if metrics['Leakage_PBV'] > 0.0
         ),
         key=lambda item: item[1]['Leakage_PBV'],
         reverse=True,

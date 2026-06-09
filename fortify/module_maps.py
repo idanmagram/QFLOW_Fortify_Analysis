@@ -10,6 +10,7 @@ import utils
 import generate_z3
 
 SHIFT_UNROLL_LIMIT = 128  # max steps to unroll simple shift-register patterns
+ARITH_CARRY_LIMIT = 8  # bound adder/subtractor expression growth for QIF extraction
 
 # map for efficiently calculating truth table entries
 truthTableMap = {}
@@ -41,6 +42,11 @@ moduleWireExprMap = {}
 moduleWireWidthMap = {}
 # bases assigned via sequential (nonblocking) statements
 seqBases = set()
+
+
+def set_arith_carry_limit(limit):
+    global ARITH_CARRY_LIMIT
+    ARITH_CARRY_LIMIT = max(0, int(limit))
 LARGE_CONST_LUT_MIN_CASES = 11
 
 
@@ -416,7 +422,7 @@ def getSigName(ast, instance_name):
         sigName = ['Not', rname]
     elif isinstance(ast, vast.Or) or isinstance(ast, vast.And) or isinstance(ast, vast.Xor) or isinstance(ast,
                                                                                                           vast.Eq) or isinstance(
-            ast, vast.NotEq) or isinstance(ast, vast.Sll):  # or isinstance(ast, vast.Plus):
+            ast, vast.NotEq) or isinstance(ast, vast.Sll) or isinstance(ast, vast.Minus):
         if isinstance(ast, vast.Or):
             op = 'Or'
         elif isinstance(ast, vast.And):
@@ -429,6 +435,8 @@ def getSigName(ast, instance_name):
             op = 'NotEq'
         elif isinstance(ast, vast.Sll):
             op = 'Sll'
+        elif isinstance(ast, vast.Minus):
+            op = 'Minus'
         lname = getSigName(ast.left, instance_name)
         rname = getSigName(ast.right, instance_name)
         sigName = [op, lname, rname]
@@ -1007,40 +1015,92 @@ def populateModuleExprMap(module_name, instance_name):
                                                 return f'{base_name}[{src_idx}:{src_idx}]'
                                             except Exception:
                                                 return expr_name
-                                        if len(expr_name) == 3 and expr_name[0] == 'Plus':
+                                        if len(expr_name) == 3 and expr_name[0] in ('Plus', 'Minus'):
                                             left = expr_name[1]
                                             right = expr_name[2]
 
-                                            def bit_from_name(name, bit_idx):
-                                                if isinstance(name, int):
-                                                    return (name >> bit_idx) & 1
-                                                if isinstance(name, list):
-                                                    return _bit_at(name, bit_idx)
-                                                try:
-                                                    base = name.rsplit('[', 1)[0]
-                                                    rng = name.split("[", 1)[1].split("]")[0]
-                                                    if ':' in rng:
-                                                        msb, lsb = map(int, rng.split(':'))
-                                                    else:
-                                                        msb = lsb = int(rng)
-                                                    if bit_idx < lsb or bit_idx > msb:
-                                                        return 0
-                                                    return f'{base}[{bit_idx}:{bit_idx}]'
-                                                except Exception:
-                                                    return name
+                                            if ARITH_CARRY_LIMIT <= 0:
+                                                def bit_from_name(name, bit_idx):
+                                                    if isinstance(name, int):
+                                                        return (name >> bit_idx) & 1
+                                                    if isinstance(name, list):
+                                                        return _bit_at(name, bit_idx)
+                                                    try:
+                                                        base = name.rsplit('[', 1)[0]
+                                                        rng = name.split("[", 1)[1].split("]")[0]
+                                                        if ':' in rng:
+                                                            msb, lsb = map(int, rng.split(':'))
+                                                        else:
+                                                            msb = lsb = int(rng)
+                                                        if bit_idx < lsb or bit_idx > msb:
+                                                            return 0
+                                                        return f'{base}[{bit_idx}:{bit_idx}]'
+                                                    except Exception:
+                                                        return name
 
-                                            # Heuristic for probability preservation:
-                                            # treat Plus as pass-through of one addend's bit (prefer self bus).
-                                            def _same_bus(name):
-                                                return isinstance(name, str) and name.rsplit('[', 1)[0] == lnameonly
+                                                def _same_bus(name):
+                                                    return isinstance(name, str) and name.rsplit('[', 1)[0] == lnameonly
 
-                                            if _same_bus(left):
-                                                chosen = left
-                                            elif _same_bus(right):
-                                                chosen = right
-                                            else:
-                                                chosen = left
-                                            return bit_from_name(chosen, idx)
+                                                if _same_bus(left):
+                                                    chosen = left
+                                                elif _same_bus(right):
+                                                    chosen = right
+                                                else:
+                                                    chosen = left
+                                                return bit_from_name(chosen, idx)
+
+                                            def _xor(a, b):
+                                                if isinstance(a, int) and isinstance(b, int):
+                                                    return a ^ b
+                                                if a == 0:
+                                                    return b
+                                                if b == 0:
+                                                    return a
+                                                if a == 1:
+                                                    return ['Not', b]
+                                                if b == 1:
+                                                    return ['Not', a]
+                                                return ['Xor', a, b]
+
+                                            def _and(a, b):
+                                                if isinstance(a, int) and isinstance(b, int):
+                                                    return a & b
+                                                if a == 0 or b == 0:
+                                                    return 0
+                                                if a == 1:
+                                                    return b
+                                                if b == 1:
+                                                    return a
+                                                return ['And', a, b]
+
+                                            def _or(a, b):
+                                                if isinstance(a, int) and isinstance(b, int):
+                                                    return a | b
+                                                if a == 1 or b == 1:
+                                                    return 1
+                                                if a == 0:
+                                                    return b
+                                                if b == 0:
+                                                    return a
+                                                return ['Or', a, b]
+
+                                            def _not(a):
+                                                if isinstance(a, int):
+                                                    return 1 - a
+                                                return ['Not', a]
+
+                                            carry = 1 if expr_name[0] == 'Minus' else 0
+                                            sum_bit = 0
+                                            start_idx = max(low, idx - ARITH_CARRY_LIMIT + 1)
+                                            for bit_idx in range(start_idx, idx + 1):
+                                                abit = _bit_at(left, bit_idx)
+                                                bbit = _bit_at(right, bit_idx)
+                                                if expr_name[0] == 'Minus':
+                                                    bbit = _not(bbit)
+                                                sum_no_carry = _xor(abit, bbit)
+                                                sum_bit = _xor(sum_no_carry, carry)
+                                                carry = _or(_and(abit, bbit), _or(_and(abit, carry), _and(bbit, carry)))
+                                            return sum_bit
                                         return expr_name
                                     try:
                                         base = expr_name.rsplit('[', 1)[0]
@@ -1183,9 +1243,7 @@ def populateModuleExprMap(module_name, instance_name):
                                         )
                                     else:
                                         truthTableMap['{}[{}:{}]'.format(lnameonly, i, i)] = gate_with_clk(0, cur_clk_name)
-                            elif isinstance(rhsAst, vast.Plus):
-                                # Heuristic for probability preservation:
-                                # treat Plus as pass-through of one addend (prefer self bus).
+                            elif isinstance(rhsAst, vast.Plus) or isinstance(rhsAst, vast.Minus):
                                 def _bits(expr):
                                     try:
                                         return getRnamesExpr(expr, low, high)
@@ -1194,29 +1252,115 @@ def populateModuleExprMap(module_name, instance_name):
 
                                 left_name = getSigName(rhsAst.left, instance_name)
                                 right_name = getSigName(rhsAst.right, instance_name)
-                                left_bits = _bits(left_name) if not isinstance(left_name, int) else None
-                                right_bits = _bits(right_name) if not isinstance(right_name, int) else None
+                                left_bits = _bits(left_name)
+                                right_bits = _bits(right_name)
+
+                                if ARITH_CARRY_LIMIT <= 0:
+                                    def _bit_passthrough(name, bits, i):
+                                        if isinstance(name, int):
+                                            return (name >> (i - low)) & 1
+                                        if (
+                                            isinstance(bits, list)
+                                            and bits
+                                            and isinstance(bits[0], str)
+                                            and bits[0] in (
+                                                "Or", "And", "Xor", "Eq", "NotEq", "Sll", "Srl",
+                                                "Plus", "Times", "Minus"
+                                            )
+                                        ):
+                                            return bits[1][i - low]
+                                        if isinstance(bits, list) and 0 <= i - low < len(bits):
+                                            return bits[i - low]
+                                        return 0
+
+                                    def _same_bus(name):
+                                        return isinstance(name, str) and name.rsplit('[', 1)[0] == lnameonly
+
+                                    if _same_bus(left_name):
+                                        chosen_name, chosen_bits = left_name, left_bits
+                                    elif _same_bus(right_name):
+                                        chosen_name, chosen_bits = right_name, right_bits
+                                    else:
+                                        chosen_name, chosen_bits = left_name, left_bits
+
+                                    for i in range(low, high + 1):
+                                        truthTableMap['{}[{}:{}]'.format(lnameonly, i, i)] = gate_with_clk(
+                                            _bit_passthrough(chosen_name, chosen_bits, i),
+                                            cur_clk_name,
+                                        )
+                                    continue
+
+                                def _xor(a, b):
+                                    if isinstance(a, int) and isinstance(b, int):
+                                        return a ^ b
+                                    if a == 0:
+                                        return b
+                                    if b == 0:
+                                        return a
+                                    if a == 1:
+                                        return ['Not', b]
+                                    if b == 1:
+                                        return ['Not', a]
+                                    return ['Xor', a, b]
+
+                                def _and(a, b):
+                                    if isinstance(a, int) and isinstance(b, int):
+                                        return a & b
+                                    if a == 0 or b == 0:
+                                        return 0
+                                    if a == 1:
+                                        return b
+                                    if b == 1:
+                                        return a
+                                    return ['And', a, b]
+
+                                def _or(a, b):
+                                    if isinstance(a, int) and isinstance(b, int):
+                                        return a | b
+                                    if a == 1 or b == 1:
+                                        return 1
+                                    if a == 0:
+                                        return b
+                                    if b == 0:
+                                        return a
+                                    return ['Or', a, b]
+
+                                def _not(a):
+                                    if isinstance(a, int):
+                                        return 1 - a
+                                    return ['Not', a]
 
                                 def _bit(name, bits, i):
                                     if isinstance(name, int):
                                         return (name >> (i - low)) & 1
-                                    if bits and len(bits) > 1:
-                                        return bits[1][i - low]
+                                    if bits:
+                                        if (
+                                            isinstance(bits, list)
+                                            and bits
+                                            and isinstance(bits[0], str)
+                                            and bits[0] in (
+                                                "Or", "And", "Xor", "Eq", "NotEq", "Sll", "Srl",
+                                                "Plus", "Times", "Minus"
+                                            )
+                                        ):
+                                            return [bits[0], bits[1][i - low], bits[2][i - low]]
+                                        return bits[i - low]
                                     return 0
 
-                                def _same_bus(name):
-                                    return isinstance(name, str) and name.rsplit('[', 1)[0] == lnameonly
-
-                                if _same_bus(left_name):
-                                    chosen_name, chosen_bits = left_name, left_bits
-                                elif _same_bus(right_name):
-                                    chosen_name, chosen_bits = right_name, right_bits
-                                else:
-                                    chosen_name, chosen_bits = left_name, left_bits
-
                                 for i in range(low, high + 1):
+                                    carry = 1 if isinstance(rhsAst, vast.Minus) else 0
+                                    sum_bit = 0
+                                    start_idx = max(low, i - ARITH_CARRY_LIMIT + 1)
+                                    for bit_idx in range(start_idx, i + 1):
+                                        abit = _bit(left_name, left_bits, bit_idx)
+                                        bbit = _bit(right_name, right_bits, bit_idx)
+                                        if isinstance(rhsAst, vast.Minus):
+                                            bbit = _not(bbit)
+                                        sum_no_carry = _xor(abit, bbit)
+                                        sum_bit = _xor(sum_no_carry, carry)
+                                        carry = _or(_and(abit, bbit), _or(_and(abit, carry), _and(bbit, carry)))
                                     truthTableMap['{}[{}:{}]'.format(lnameonly, i, i)] = gate_with_clk(
-                                        _bit(chosen_name, chosen_bits, i),
+                                        sum_bit,
                                         cur_clk_name,
                                     )
                             else:

@@ -71,8 +71,8 @@ def incSigProb(a, b, op):
     elif op == "Or":
         return a + b - a * b
     elif op == "Xor":
-        #return a + b - a * b
-        return a + b - 2 * a * b
+        return a + b - a * b
+        #return a + b - 2 * a * b
         #return a*b
     elif op == "Eq":
         return a * b + (1.0 - a) * (1.0 - b)
@@ -739,6 +739,7 @@ def populateSigProbs_recon_dp(signalNames, s_hat, s_hat_0, s_hat_1,
                 if (recon_only_set is not None) and (sig in recon_only_set) and shared_primary_inputs and shared_primary_inputs != {'top.clk[0:0]'}:
                     #print("sig ",sig," shared_primary_inputs ",shared_primary_inputs, " from a ",a," and ",b)
                     shared_primary_inputs = sorted(shared_primary_inputs - {'top.clk[0:0]'})
+                    #shared_primary_inputs = sorted(shared_primary_inputs)
                     shared_primary_inputs = shared_primary_inputs[:max_shared_ancestors]
                     print("sig ",sig," shared_primary_inputs ",shared_primary_inputs, " from a ",a," and ",b)
                     p, p0, p1 = _compute_recon_tables(op, a, b, shared_primary_inputs)

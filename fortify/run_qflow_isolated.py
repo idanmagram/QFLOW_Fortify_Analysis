@@ -757,6 +757,7 @@ def main(input_file_path, top_module_name, ref_module_name, ref_instance_name,
     print()
 
     ref_bits = [f"{ref_sig_name}[{bit}:{bit}]" for bit in range(ref_sig_width)]
+    module_maps.set_arith_carry_limit(8)
     input_names, input_widths, signal_names, _, truth_table_map = module_maps.subCircuitExtract(
         input_file_path, top_module_name, ref_module_name, ref_instance_name, ref_bits
     )
@@ -779,6 +780,10 @@ def main(input_file_path, top_module_name, ref_module_name, ref_instance_name,
     truth_table_map = {sig: expr for sig, expr in truth_table_map.items() if sig in reachable_signals}
     signal_names = reachable_signals | set(ref_bits)
     graph_order = [sig for sig in graph["order"] if sig in reachable_signals or sig in ref_bits]
+    ordered = set(graph_order)
+    graph_order.extend(
+        sorted(sig for sig in (reachable_signals | set(ref_bits)) if sig not in ordered)
+    )
 
     input_bits = []
     for name, width in zip(input_names, input_widths):
