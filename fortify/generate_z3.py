@@ -9,6 +9,155 @@ import pyverilog.vparser.ast as vast
 import graph
 import utils
 
+
+def _unwrap_lvalue_rvalue(ast):
+    if isinstance(ast, (vast.Lvalue, vast.Rvalue)):
+        return ast.var
+    return ast
+
+
+def _substitute_genvars(ast, env):
+    if isinstance(ast, list):
+        return [_substitute_genvars(item, env) for item in ast]
+    if isinstance(ast, tuple):
+        return tuple(_substitute_genvars(item, env) for item in ast)
+    if not isinstance(ast, vast.Node):
+        return ast
+    if isinstance(ast, vast.Identifier) and ast.name in env:
+        return vast.IntConst(str(env[ast.name]))
+
+    def _const_int(node):
+        if isinstance(node, vast.IntConst):
+            return utils.verilogIntConstToInt(node)
+        return None
+
+    new_ast = copy.deepcopy(ast)
+    for attr, value in vars(new_ast).items():
+        if isinstance(value, (vast.Node, list, tuple)):
+            setattr(new_ast, attr, _substitute_genvars(value, env))
+
+    if isinstance(new_ast, vast.Plus):
+        left_val = _const_int(new_ast.left)
+        right_val = _const_int(new_ast.right)
+        if left_val is not None and right_val is not None:
+            return vast.IntConst(str(left_val + right_val))
+    if isinstance(new_ast, vast.Minus):
+        left_val = _const_int(new_ast.left)
+        right_val = _const_int(new_ast.right)
+        if left_val is not None and right_val is not None:
+            return vast.IntConst(str(left_val - right_val))
+    if isinstance(new_ast, vast.Times):
+        left_val = _const_int(new_ast.left)
+        right_val = _const_int(new_ast.right)
+        if left_val is not None and right_val is not None:
+            return vast.IntConst(str(left_val * right_val))
+    if isinstance(new_ast, vast.Divide):
+        left_val = _const_int(new_ast.left)
+        right_val = _const_int(new_ast.right)
+        if left_val is not None and right_val is not None and right_val != 0:
+            return vast.IntConst(str(left_val // right_val))
+    if isinstance(new_ast, vast.Mod):
+        left_val = _const_int(new_ast.left)
+        right_val = _const_int(new_ast.right)
+        if left_val is not None and right_val is not None and right_val != 0:
+            return vast.IntConst(str(left_val % right_val))
+    return new_ast
+
+
+def _eval_gen_expr(ast, env):
+    ast = _unwrap_lvalue_rvalue(ast)
+    if isinstance(ast, vast.IntConst):
+        return utils.verilogIntConstToInt(ast)
+    if isinstance(ast, vast.Identifier) and ast.name in env:
+        return int(env[ast.name])
+    if isinstance(ast, vast.Unot):
+        return 0 if _eval_gen_expr(ast.right, env) else 1
+    if isinstance(ast, vast.Uminus):
+        return -_eval_gen_expr(ast.right, env)
+    if isinstance(ast, vast.Plus):
+        return _eval_gen_expr(ast.left, env) + _eval_gen_expr(ast.right, env)
+    if isinstance(ast, vast.Minus):
+        return _eval_gen_expr(ast.left, env) - _eval_gen_expr(ast.right, env)
+    if isinstance(ast, vast.Times):
+        return _eval_gen_expr(ast.left, env) * _eval_gen_expr(ast.right, env)
+    if isinstance(ast, vast.Divide):
+        return _eval_gen_expr(ast.left, env) // _eval_gen_expr(ast.right, env)
+    if isinstance(ast, vast.Mod):
+        return _eval_gen_expr(ast.left, env) % _eval_gen_expr(ast.right, env)
+    if isinstance(ast, vast.Sll):
+        return _eval_gen_expr(ast.left, env) << _eval_gen_expr(ast.right, env)
+    if isinstance(ast, vast.Srl):
+        return _eval_gen_expr(ast.left, env) >> _eval_gen_expr(ast.right, env)
+    if isinstance(ast, vast.LessThan):
+        return int(_eval_gen_expr(ast.left, env) < _eval_gen_expr(ast.right, env))
+    if isinstance(ast, vast.LessEq):
+        return int(_eval_gen_expr(ast.left, env) <= _eval_gen_expr(ast.right, env))
+    if isinstance(ast, vast.GreaterThan):
+        return int(_eval_gen_expr(ast.left, env) > _eval_gen_expr(ast.right, env))
+    if isinstance(ast, vast.GreaterEq):
+        return int(_eval_gen_expr(ast.left, env) >= _eval_gen_expr(ast.right, env))
+    if isinstance(ast, vast.Eq):
+        return int(_eval_gen_expr(ast.left, env) == _eval_gen_expr(ast.right, env))
+    if isinstance(ast, vast.NotEq):
+        return int(_eval_gen_expr(ast.left, env) != _eval_gen_expr(ast.right, env))
+    if isinstance(ast, vast.Land):
+        return int(bool(_eval_gen_expr(ast.left, env)) and bool(_eval_gen_expr(ast.right, env)))
+    if isinstance(ast, vast.Lor):
+        return int(bool(_eval_gen_expr(ast.left, env)) or bool(_eval_gen_expr(ast.right, env)))
+    raise ValueError(f"Unsupported generate expression: {type(ast)}")
+
+
+def _extract_gen_update(stmt, env):
+    stmt = _unwrap_lvalue_rvalue(stmt)
+    if not isinstance(stmt, (vast.BlockingSubstitution, vast.Assign)):
+        raise ValueError(f"Unsupported generate loop update: {type(stmt)}")
+
+    lhs = _unwrap_lvalue_rvalue(stmt.left)
+    rhs = _unwrap_lvalue_rvalue(stmt.right)
+    if not isinstance(lhs, vast.Identifier):
+        raise ValueError("Generate loop update target must be an identifier")
+    return lhs.name, _eval_gen_expr(rhs, env)
+
+
+def _expand_generate_stmt(stmt, env):
+    stmt = _unwrap_lvalue_rvalue(stmt)
+
+    if isinstance(stmt, vast.Block):
+        out = []
+        for sub_stmt in stmt.statements:
+            out.extend(_expand_generate_stmt(sub_stmt, env))
+        return out
+
+    if isinstance(stmt, vast.GenerateStatement):
+        out = []
+        for sub_stmt in stmt.items:
+            out.extend(_expand_generate_stmt(sub_stmt, env))
+        return out
+
+    if isinstance(stmt, vast.ForStatement):
+        loop_env = dict(env)
+        init_name, init_value = _extract_gen_update(stmt.pre, loop_env)
+        loop_env[init_name] = init_value
+        out = []
+        guard = 0
+        while _eval_gen_expr(stmt.cond, loop_env):
+            out.extend(_expand_generate_stmt(stmt.statement, loop_env))
+            next_name, next_value = _extract_gen_update(stmt.post, loop_env)
+            loop_env[next_name] = next_value
+            guard += 1
+            if guard > 100000:
+                raise RuntimeError("Generate loop expansion exceeded safety limit")
+        return out
+
+    return [_substitute_genvars(stmt, env)]
+
+
+def _expand_module_items(items):
+    expanded = []
+    for item in items:
+        expanded.extend(_expand_generate_stmt(item, {}))
+    return expanded
+
 def getInitExpr(width):
     return z3.BitVecVal(0, width)
 
@@ -342,7 +491,7 @@ def processBlockingSubstitution(statementAst, nameExprMap, nameWidthMap, functio
     if isinstance(lhsAst, vast.Identifier):
         rhsExpr = truncateExprToWidth(rhsExpr, nameWidthMap[functionName + '.' + lhsAst.name])
         nameExprMap[functionName + '.' + lhsAst.name] = rhsExpr
-    
+
     elif isinstance(lhsAst, vast.Pointer):
         assert(isinstance(lhsAst.var, vast.Identifier))
         assert(isinstance(lhsAst.ptr, vast.IntConst))
@@ -452,7 +601,7 @@ def getIdentifiers(ast):
             ret.extend(getIdentifiers(item))
         return ret
 
-    elif isinstance(ast, vast.Or) or isinstance(ast, vast.And) or isinstance(ast, vast.Xor) or isinstance(ast, vast.Eq) or isinstance(ast, vast.NotEq):
+    elif isinstance(ast, vast.Or) or isinstance(ast, vast.And) or isinstance(ast, vast.Xor) or isinstance(ast, vast.Eq) or isinstance(ast, vast.NotEq) or isinstance(ast, vast.Plus) or isinstance(ast, vast.Minus) or isinstance(ast, vast.Times) or isinstance(ast, vast.Divide) or isinstance(ast, vast.Mod):
         return getIdentifiers(ast.left) + getIdentifiers(ast.right)
 
     elif isinstance(ast, vast.Unot):
@@ -585,6 +734,7 @@ def updateAssignGraphWithInstAst(assignGraph, instAst, moduleInputPortListMap, m
 # compute the module wire expressions, width maps and topological sort of the nodes in the module ast
 def generateModuleMaps(moduleAst, moduleInputPortListMap, moduleOutputPortListMap, moduleInputPortWidthListMap, moduleOutputPortWidthListMap, moduleWireExprMap):
     assert(isinstance(moduleAst, vast.ModuleDef))
+    expanded_items = _expand_module_items(moduleAst.items)
 
     # graph of assign statements
     assignGraph = graph.Graph()
@@ -602,7 +752,7 @@ def generateModuleMaps(moduleAst, moduleInputPortListMap, moduleOutputPortListMa
     astProcessed = {}
 
     # process the asts in the module ast to get the declarations and function maps
-    for ast in moduleAst.items:
+    for ast in expanded_items:
         if isinstance(ast, vast.Decl):
             for varAst in ast.list:
                 if varAst.width is not None:
@@ -634,8 +784,8 @@ def generateModuleMaps(moduleAst, moduleInputPortListMap, moduleOutputPortListMa
 
     # populate graph with assign statements and module instantiations
     sequential_nodes = []
-    
-    for ast in moduleAst.items:
+
+    for ast in expanded_items:
         if isinstance(ast, vast.Assign):
             updateAssignGraph(assignGraph, ast)
         # ADDED: Handle sequential logic in always blocks
@@ -645,7 +795,7 @@ def generateModuleMaps(moduleAst, moduleInputPortListMap, moduleOutputPortListMa
             for lhsAst, assign_list in guarded_assigns.items():
                 mux_expr = _guards_to_mux(assign_list)
                 nb = vast.NonblockingSubstitution(vast.Lvalue(lhsAst), vast.Rvalue(mux_expr))
-                
+
                 # Separate these from graph to avoid cycles (seq logic depends on combinational, calculated after)
                 lhs_ids = getIdentifiers(lhsAst)
                 node_name = lhs_ids[0] if lhs_ids else "seq_block"
@@ -659,7 +809,7 @@ def generateModuleMaps(moduleAst, moduleInputPortListMap, moduleOutputPortListMa
 
     # do topological sort on graph
     topSortNodes = assignGraph.topSort()
-    
+
     # Append sequential nodes at the end
     topSortNodes.extend(sequential_nodes)
 

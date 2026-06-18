@@ -124,7 +124,8 @@ def estimate_c_and_pbv_from_conditional_probs(s_hat_0, s_hat_1, s_hat,
             # 5. Leakage
             # ----------------------------------
 
-            leakage_pbv = _normalized_leakage_from_pbv(pbv, prior)
+            #leakage_pbv = _normalized_leakage_from_pbv(pbv, prior)
+            leakage_pbv = (pbv/prior) - 1
 
             per_output_results[(sig,ref)] = {
                 'PBV': pbv,

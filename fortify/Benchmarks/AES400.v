@@ -101,13 +101,14 @@ module aes_128(clk, state, key, out);
     // -------------------------------------------------------
     // ROUND FUNCTIONS (10 rounds, one per line)
     // -------------------------------------------------------
+    // -------------------------------------------------------
 	
     one_round  r1 (.clk(clk), .state_in(s0), .key(k0b), .state_out(s1));
 	
     one_round  r2 (.clk(clk), .state_in(s1), .key(k1b), .state_out(out));
-	/*
-    one_round  r3 (.clk(clk), .state_in(s2), .key(k2b), .state_out(s3));
 	
+    //one_round  r3 (.clk(clk), .state_in(s2), .key(k2b), .state_out(out));
+	/*
     one_round  r4 (.clk(clk), .state_in(s3), .key(k3b), .state_out(s4));
 	
     one_round  r5 (.clk(clk), .state_in(s4), .key(k4b), .state_out(s5));

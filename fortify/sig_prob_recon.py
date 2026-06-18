@@ -71,8 +71,8 @@ def incSigProb(a, b, op):
     elif op == "Or":
         return a + b - a * b
     elif op == "Xor":
-        return a + b - a * b
-        #return a + b - 2 * a * b
+        #return a + b - a * b
+        return a + b - 2 * a * b
         #return a*b
     elif op == "Eq":
         return a * b + (1.0 - a) * (1.0 - b)
@@ -432,20 +432,29 @@ def populateSigProbs_recon_dp(signalNames, s_hat, s_hat_0, s_hat_1,
     binary_ops = {"And", "Or", "Xor", "Eq", "NotEq", "Nand", "Nor"}
     print("start calculation")
 
-    primary_input_ancestor_cache = {}
+    source_ancestor_cache = {}
 
     def _is_primary_input_signal(sig):
         return isinstance(sig, str) and (
             sig in inputSigBitNames or sig.split("@", 1)[0] in inputSigBitNames
         )
 
+    def _is_source_ancestor_signal(sig):
+        if not isinstance(sig, str):
+            return False
+        if _is_primary_input_signal(sig):
+            return True
+        # Signals with no defining expression in the recon graph are source nodes.
+        # This includes register/state bits that should participate in shared ancestry.
+        return not parents.get(sig, set())
+
     def _collect_primary_input_parents(sig, visiting=None):
         if not isinstance(sig, str):
             return set()
-        if sig in primary_input_ancestor_cache:
-            return set(primary_input_ancestor_cache[sig])
-        if _is_primary_input_signal(sig):
-            primary_input_ancestor_cache[sig] = {sig}
+        if sig in source_ancestor_cache:
+            return set(source_ancestor_cache[sig])
+        if _is_source_ancestor_signal(sig):
+            source_ancestor_cache[sig] = {sig}
             return {sig}
         if visiting is None:
             visiting = set()
@@ -456,7 +465,7 @@ def populateSigProbs_recon_dp(signalNames, s_hat, s_hat_0, s_hat_1,
         for parent in parents.get(sig, set()):
             result |= _collect_primary_input_parents(parent, visiting)
         visiting.remove(sig)
-        primary_input_ancestor_cache[sig] = set(result)
+        source_ancestor_cache[sig] = set(result)
         return result
 
     def _operand_signal_refs(expr):
@@ -740,6 +749,7 @@ def populateSigProbs_recon_dp(signalNames, s_hat, s_hat_0, s_hat_1,
                     #print("sig ",sig," shared_primary_inputs ",shared_primary_inputs, " from a ",a," and ",b)
                     shared_primary_inputs = sorted(shared_primary_inputs - {'top.clk[0:0]'})
                     #shared_primary_inputs = sorted(shared_primary_inputs)
+                    print("max_shared_ancestors ",max_shared_ancestors)
                     shared_primary_inputs = shared_primary_inputs[:max_shared_ancestors]
                     print("sig ",sig," shared_primary_inputs ",shared_primary_inputs, " from a ",a," and ",b)
                     p, p0, p1 = _compute_recon_tables(op, a, b, shared_primary_inputs)

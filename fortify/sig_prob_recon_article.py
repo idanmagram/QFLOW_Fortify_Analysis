@@ -776,6 +776,10 @@ def populateSigProbs_recon_article(
                         shared_sources = sorted(shared_sources)
                         print("max_shared_ancestors ",max_shared_ancestors)
                         shared_sources = shared_sources[:max_shared_ancestors]
+                        print(
+                            "[ARTICLE-RECON] recon_sources="
+                            + ", ".join(sorted(shared_sources))
+                        )
 
                         p, p0, p1 = _compute_recon_tables(
                             op, a, b, shared_sources

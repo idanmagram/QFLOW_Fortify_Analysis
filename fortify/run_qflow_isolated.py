@@ -663,9 +663,9 @@ def _compute_qflow_metrics(order, truth_table_map, ref_bits, input_bits, secret_
                 pbv = _pbv_from_conditionals(p1_if_0, p1_if_1, 0.5)
 
             signal_prob_cond[sig][ref] = {0: p1_if_0, 1: p1_if_1}
+            signal_pbv[sig][ref] = pbv
             leak_sources = channel_input_nodes if channel_input_nodes else leaves
             leak_in = sum(signal_leak.get(src, {}).get(ref, 0.0) for src in leak_sources)
-            signal_pbv[sig][ref] = pbv
             signal_leak[sig][ref] = min(1.0, pbv * leak_in) if leak_in > 0.0 else 0.0
 
     return signal_prob, signal_prob_cond, signal_leak, signal_pbv
