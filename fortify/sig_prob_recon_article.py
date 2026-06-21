@@ -212,19 +212,15 @@ def populateSigProbs_recon_article(
         b_ref_set = set(b_refs)
         valid_sources = set()
 
-        def _child_hits(child, refs):
-            child_desc = _collect_descendants_any(child)
-            return bool(child_desc & refs)
+        def _reaches_refs(node, refs):
+            node_desc = _collect_descendants_any(node)
+            return bool(node_desc & refs)
 
         for source in candidate:
-            source_children = graph_artifacts["children"].get(source, set())
-            if len(source_children) < 2:
-                continue
-
-            left_children = {child for child in source_children if _child_hits(child, a_ref_set)}
-            right_children = {child for child in source_children if _child_hits(child, b_ref_set)}
-
-            if any(left_child != right_child for left_child in left_children for right_child in right_children):
+            # A valid reconvergence source must be able to reach both sink-input
+            # cones. The split may happen several levels downstream, so do not
+            # require two different immediate children here.
+            if _reaches_refs(source, a_ref_set) and _reaches_refs(source, b_ref_set):
                 valid_sources.add(source)
 
         if not valid_sources:
@@ -232,11 +228,13 @@ def populateSigProbs_recon_article(
 
         minimal = set(valid_sources)
         for source in list(valid_sources):
-            source_desc = _collect_descendants_any(source)
             for other in valid_sources:
                 if other == source:
                     continue
-                if other in source_desc:
+                other_desc = _collect_descendants_any(other)
+                # Keep the earliest branching causes of correlation and drop
+                # downstream shared nodes derived from them.
+                if source in other_desc:
                     minimal.discard(source)
                     break
 
@@ -762,7 +760,10 @@ def populateSigProbs_recon_article(
                 if recon_only_set is not None and sig in recon_only_set:
                     shared_sources = _shared_recon_sources(a, b)
                     #shared_sources = shared_sources - {'top.clk[0:0]'}
+                    shared_sources = {s for s in shared_sources if 'clk' not in s}
                     if shared_sources:
+                        if len(shared_sources) > 2:
+                            print("more than 2 shared sources for ",sig)
                         print(f"[ARTICLE-RECON] sink={sig}")
                         print(f"[ARTICLE-RECON] left={_expr_to_str(a)}")
                         print(f"[ARTICLE-RECON] right={_expr_to_str(b)}")
@@ -772,9 +773,12 @@ def populateSigProbs_recon_article(
                             "[ARTICLE-RECON] recon_sources="
                             + ", ".join(sorted(shared_sources))
                         )
-                        shared_sources = shared_sources - {'top.clk[0:0]'}
+                        #shared_sources = shared_sources - {'top.clk[0:0]'}
                         shared_sources = sorted(shared_sources)
-                        print("max_shared_ancestors ",max_shared_ancestors)
+                        print(
+                            "[ARTICLE-RECON] BEFORE recon_sources="
+                            + ", ".join(sorted(shared_sources))
+                        )
                         shared_sources = shared_sources[:max_shared_ancestors]
                         print(
                             "[ARTICLE-RECON] recon_sources="
@@ -800,3 +804,4 @@ def populateSigProbs_recon_article(
         if sig in s_hat:
             continue
         s_hat[sig], s_hat_0[sig], s_hat_1[sig], _ = _compute_signal_result(sig)
+

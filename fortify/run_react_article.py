@@ -4,6 +4,7 @@ import argparse
 import random
 import module_maps
 import os
+import re
 import sig_prob_recon
 import sig_prob_recon_t
 import sig_prob_recon_article
@@ -17,6 +18,8 @@ UNROLL_DEPTH = 32
 
 
 sys.setrecursionlimit(100000)
+
+REF_BIT_RE = re.compile(r"\[(?P<idx>\d+):\d+\]")
 
 
 def _get_cached_uniform(cache, key):
@@ -66,7 +69,7 @@ def estimate_c_and_pbv_from_conditional_probs(
             best_if_s0 = max(p_s0_h0, p_s0_h1)
             best_if_s1 = max(p_s1_h0, p_s1_h1)
             pbv = best_if_s0 + best_if_s1
-            leakage_pbv = pbv / prior
+            leakage_pbv = (pbv / prior) - 1
 
             per_output_results[(sig, ref)] = {
                 "PBV": pbv,
@@ -124,6 +127,30 @@ def _aggregate_per_output_rows(per_output_results, score_key="Leakage_PBV"):
         if key not in aggregated or row[score_key] > aggregated[key][score_key]:
             aggregated[key] = row
     return aggregated
+
+
+def _ref_sort_key(ref):
+    match = REF_BIT_RE.search(ref)
+    if match:
+        return int(match.group("idx")), ref
+    return 10**9, ref
+
+
+def _pairs_from_max_per_secret(max_per_secret_results):
+    return sorted(
+        [
+            (ref, metrics["Leakage_PBV"])
+            for ref, metrics in max_per_secret_results.items()
+            if metrics["Leakage_PBV"] > 0.0
+        ],
+        key=lambda item: _ref_sort_key(item[0]),
+    )
+
+
+def _mean_leakage_from_pairs(pairs):
+    if not pairs:
+        return 0.0
+    return sum(value for _ref, value in pairs) / len(pairs)
 
 
 def _snapshot_output_signal_probabilities(s_hat, outputSigBitNames):
@@ -262,6 +289,57 @@ def _plot_before_after_bars(
     plt.close(fig)
 
 
+def _plot_key_before_after(path, before_pairs, after_pairs):
+    try:
+        import matplotlib.pyplot as plt
+        from matplotlib.ticker import FuncFormatter
+    except Exception as exc:
+        print(f"Skipping graph generation for {path}: matplotlib unavailable ({exc})")
+        return
+
+    before = dict(before_pairs)
+    after = dict(after_pairs)
+    refs = sorted(set(before) | set(after), key=_ref_sort_key)
+    if not refs:
+        print(f"Skipping graph generation for {path}: no data")
+        return
+
+    xs = list(range(len(refs)))
+    before_values = [before.get(ref, 0.0) for ref in refs]
+    after_values = [after.get(ref, 0.0) for ref in refs]
+    labels = [str(_ref_sort_key(ref)[0]) for ref in refs]
+
+    fig, ax = plt.subplots(figsize=(13, 5))
+    ax.plot(xs, before_values, marker=".", linewidth=1.5, label="Before reconvergence")
+    ax.plot(xs, after_values, marker=".", linewidth=1.5, label="After reconvergence")
+    ax.set_title("Per-Key Leakage Before vs After Reconvergence")
+    ax.set_xlabel("key bit index")
+    ax.set_ylabel("Leakage_PBV")
+    edge_ticks = []
+    edge_labels = []
+    if xs:
+        edge_ticks.append(xs[0])
+        edge_labels.append(labels[0])
+    if len(xs) > 1:
+        edge_ticks.append(xs[-1])
+        edge_labels.append(labels[-1])
+    ax.set_xticks(edge_ticks)
+    ax.set_xticklabels(edge_labels, fontsize=9)
+
+    def _sci_tick(y, _):
+        if y == 0:
+            return "0"
+        mantissa, exponent = f"{y:.1e}".split("e")
+        return rf"${mantissa}\times10^{{{int(exponent)}}}$"
+
+    ax.yaxis.set_major_formatter(FuncFormatter(_sci_tick))
+    ax.grid(True, linestyle="--", alpha=0.35)
+    ax.legend(frameon=False)
+    fig.tight_layout()
+    fig.savefig(path, dpi=200)
+    plt.close(fig)
+
+
 def _generate_before_after_graphs(
     results_dir,
     before_signal_probs,
@@ -270,6 +348,8 @@ def _generate_before_after_graphs(
     after_conditional_probs,
     before_leakage_rows,
     after_leakage_rows,
+    before_lmax_pairs,
+    after_lmax_pairs,
     top_n=20,
 ):
     _write_probability_comparison_csv(
@@ -355,6 +435,11 @@ def _generate_before_after_graphs(
         [row[1] for row in leakage_rows],
         [row[2] for row in leakage_rows],
         "Leakage_PBV",
+    )
+    _plot_key_before_after(
+        os.path.join(results_dir, "key_leakage_before_after.png"),
+        before_lmax_pairs,
+        after_lmax_pairs,
     )
 
 
@@ -466,6 +551,8 @@ def main(
 
     s_hat, s_hat_0, s_hat_1 = _init_prob_tables()
     first_pass_results = None
+    first_pass_mean_leakage = None
+    first_pass_lmax_pairs = None
     before_signal_probs = None
     before_conditional_probs = None
 
@@ -503,11 +590,7 @@ def main(
     def _print_lmax_summary(max_per_secret_results, title):
         print(f"\n{title}\n")
         sorted_max_per_secret = sorted(
-            (
-                (ref, metrics)
-                for ref, metrics in max_per_secret_results.items()
-                if metrics["Leakage_PBV"] > 1.0
-            ),
+            max_per_secret_results.items(),
             key=lambda item: item[1]["Leakage_PBV"],
             reverse=True,
         )
@@ -565,6 +648,13 @@ def main(
                 first_pass_results["max_per_secret"],
                 "L_max(H) across all selected outputs before reconvergence refinement:",
             )
+            first_pass_lmax_pairs = _pairs_from_max_per_secret(
+                first_pass_results["max_per_secret"]
+            )
+            first_pass_mean_leakage = _mean_leakage_from_pairs(first_pass_lmax_pairs)
+            print(
+                f"Mean leakage before reconvergence: {first_pass_mean_leakage:.15f}"
+            )
             before_signal_probs = _snapshot_output_signal_probabilities(
                 s_hat, outputSigBitNames
             )
@@ -575,7 +665,7 @@ def main(
             print("Total time taken first pass: {:.4f}s".format(pass1Time - startTime))
 
             leaky_outputs = extract_leaky_outputs(
-                first_pass_results["per_output"], leakage_threshold=1.0000088
+                first_pass_results["per_output"], leakage_threshold=0.0000088
             )
             recon_only_set = extract_sub_recon_graph(
                 truth_table_map=truthTableMap,
@@ -652,6 +742,8 @@ def main(
     )
     per_output_results = results["per_output"]
     max_per_secret_results = results["max_per_secret"]
+    final_lmax_pairs = _pairs_from_max_per_secret(max_per_secret_results)
+    final_mean_leakage = _mean_leakage_from_pairs(final_lmax_pairs)
 
     _print_top_150_leakage(
         per_output_results,
@@ -675,6 +767,8 @@ def main(
             after_conditional_probs,
             before_leakage_rows,
             after_leakage_rows,
+            first_pass_lmax_pairs,
+            final_lmax_pairs,
         )
     else:
         print("Skipping probability/leakage comparison graphs: no first-pass baseline was computed")
@@ -683,6 +777,15 @@ def main(
         max_per_secret_results,
         "L_max(H) across all selected outputs after reconvergence refinement:",
     )
+    if reconvergence_aware and first_pass_mean_leakage is not None:
+        print(f"Mean leakage before reconvergence: {first_pass_mean_leakage:.15f}")
+        print(f"Mean leakage after reconvergence:  {final_mean_leakage:.15f}")
+        print(
+            f"Mean leakage delta:               "
+            f"{final_mean_leakage - first_pass_mean_leakage:.15f}"
+        )
+    else:
+        print(f"Average leakage across all selected outputs: {final_mean_leakage:.15f}")
 
     endTime = time.time()
     print()

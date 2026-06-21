@@ -499,6 +499,7 @@ def populateSigProbs_recon_dp(signalNames, s_hat, s_hat_0, s_hat_1,
 
         for a_ref in a_refs:
             a_pi = _collect_primary_input_parents(a_ref)
+            #print("a_pi", a_pi)
             for b_ref in b_refs:
                 shared |= (a_pi & _collect_primary_input_parents(b_ref))
 
@@ -509,6 +510,7 @@ def populateSigProbs_recon_dp(signalNames, s_hat, s_hat_0, s_hat_1,
 
         for idx, b_ref in enumerate(b_refs):
             b_pi = _collect_primary_input_parents(b_ref)
+            #print("b_pi", b_pi)
             for other_ref in b_refs[idx + 1:]:
                 shared |= (b_pi & _collect_primary_input_parents(other_ref))
 
@@ -745,6 +747,8 @@ def populateSigProbs_recon_dp(signalNames, s_hat, s_hat_0, s_hat_1,
                         return 1.0, {ref: 1.0 for ref in refSigBitNames}, {ref: 1.0 for ref in refSigBitNames}, True
 
                 shared_primary_inputs = _shared_primary_input_parents(a, b)
+                print("original sig ", sig, " shared_primary_inputs ", shared_primary_inputs, " from a ", a, " and ", b)
+
                 if (recon_only_set is not None) and (sig in recon_only_set) and shared_primary_inputs and shared_primary_inputs != {'top.clk[0:0]'}:
                     #print("sig ",sig," shared_primary_inputs ",shared_primary_inputs, " from a ",a," and ",b)
                     shared_primary_inputs = sorted(shared_primary_inputs - {'top.clk[0:0]'})
@@ -766,4 +770,3 @@ def populateSigProbs_recon_dp(signalNames, s_hat, s_hat_0, s_hat_1,
         if sig in s_hat:
             continue
         s_hat[sig], s_hat_0[sig], s_hat_1[sig], _ = _compute_signal_result(sig)
-

@@ -5,6 +5,7 @@ import random
 from collections import defaultdict
 import module_maps
 import os
+import re
 import sig_prob_recon
 import sig_prob_recon_t
 from tqdm import tqdm
@@ -17,6 +18,8 @@ UNROLL_DEPTH = 32
 
 
 sys.setrecursionlimit(100000)
+
+REF_BIT_RE = re.compile(r"\[(?P<idx>\d+):\d+\]")
 
 
 def _get_cached_uniform(cache, key):
@@ -217,11 +220,36 @@ def estimate_c_and_pbv_from_conditional_probs1(s_hat_0, s_hat_1, s_hat,
 
     return results
 
+
+def _ref_sort_key(ref):
+    match = REF_BIT_RE.search(ref)
+    if match:
+        return int(match.group("idx")), ref
+    return 10**9, ref
+
+
+def _pairs_from_max_per_secret(max_per_secret_results):
+    return sorted(
+        [
+            (ref, metrics["Leakage_PBV"])
+            for ref, metrics in max_per_secret_results.items()
+            if metrics["Leakage_PBV"] > 0.0
+        ],
+        key=lambda item: _ref_sort_key(item[0]),
+    )
+
+
+def _mean_leakage_from_pairs(pairs):
+    if not pairs:
+        return 0.0
+    return sum(value for _ref, value in pairs) / len(pairs)
+
 def main(input_file_path, top_module_name, ref_module_name, ref_instance_name,
          ref_sig_name, ref_sig_width, design, leaks_file_path, time_file_path,
          reconvergence_aware=False, subgraph_path=None, reconvergence_algorithm="dp",
          max_shared_ancestors=4, top_k_per_base=1):
     startTime = time.time()
+    first_pass_mean_leakage = None
 
     print("\n ******************************************************************")
     print("Design:", design, "\n")
@@ -414,6 +442,9 @@ def main(input_file_path, top_module_name, ref_module_name, ref_instance_name,
                     f"argmax_output: {metrics['argmax_output']}"
                 )
             print()
+            first_pass_pairs = _pairs_from_max_per_secret(max_per_secret_results)
+            first_pass_mean_leakage = _mean_leakage_from_pairs(first_pass_pairs)
+            print(f"Mean leakage before reconvergence: {first_pass_mean_leakage:.15f}")
             print("top_k_per_base ", top_k_per_base)
             leaky_outputs = extract_leaky_outputs(
                 first_pass_results['per_output'], leakage_threshold=0.0000088,
@@ -520,6 +551,14 @@ def main(input_file_path, top_module_name, ref_module_name, ref_instance_name,
             f"argmax_output: {metrics['argmax_output']}"
         )
     print()
+    final_pairs = _pairs_from_max_per_secret(max_per_secret_results)
+    final_mean_leakage = _mean_leakage_from_pairs(final_pairs)
+    if reconvergence_aware and first_pass_mean_leakage is not None:
+        print(f"Mean leakage before reconvergence: {first_pass_mean_leakage:.15f}")
+        print(f"Mean leakage after reconvergence:  {final_mean_leakage:.15f}")
+        print(f"Mean leakage delta:               {final_mean_leakage - first_pass_mean_leakage:.15f}")
+    else:
+        print(f"Average leakage across all selected outputs: {final_mean_leakage:.15f}")
     endTime = time.time()
     print("Total time taken: {:.4f}s".format(endTime - startTime))
     print("\nCompleted!")
@@ -547,7 +586,7 @@ if __name__ == '__main__':
                            help='reconvergence algorithm to use with --reconvergence-aware')
     my_parser.add_argument('--subgraph-path', type=str, action='store',
                            help='path to subgraph nodes (one per line) to limit reconvergence')
-    my_parser.add_argument('--max-shared-ancestors', type=int, default=4,
+    my_parser.add_argument('--max-shared-ancestors', type=int, default=3,
                            help='maximum number of shared ancestors to condition on during reconvergence')
     my_parser.add_argument('--top-k-per-base', type=int, default=1,
                            help='number of leaky time-slices to keep per base output during subgraph extraction')
