@@ -13,6 +13,8 @@ LOWERABLE_OPS = {
 }
 
 MAX_SHARED_ANCESTORS=4
+_BUS_VALUE_PROB_CACHE = {}
+_LUT_CONST_BIT_PROB_CACHE = {}
 
 
 def lower_truth_table_map(truth_table_map):
@@ -159,6 +161,46 @@ def _bits_from_bus(bus):
 
 
 def _lut_const_bit_prob(bus, default_bit, exception_keys, bit_prob_fn):
+    abits = _bits_from_bus(bus)
+    if abits is None:
+        return 0.5
+    bit_probs = tuple(float(bit_prob_fn(abit)) for abit in abits)
+    dist_key = (len(abits), bit_probs)
+    value_probs = _BUS_VALUE_PROB_CACHE.get(dist_key)
+    if value_probs is None:
+        nbits = len(abits)
+        value_probs_list = []
+        for value in range(1 << nbits):
+            p_value = 1.0
+            for bit_idx, p_bit in enumerate(bit_probs):
+                p_value *= p_bit if ((value >> bit_idx) & 1) else (1.0 - p_bit)
+                if p_value == 0.0:
+                    break
+            value_probs_list.append(p_value)
+        value_probs = tuple(value_probs_list)
+        _BUS_VALUE_PROB_CACHE[dist_key] = value_probs
+
+    exception_tuple = tuple(int(v) for v in exception_keys)
+    cache_key = (dist_key, int(default_bit), exception_tuple)
+    cached = _LUT_CONST_BIT_PROB_CACHE.get(cache_key)
+    if cached is not None:
+        return cached
+
+    exception_mass = 0.0
+    for value in exception_tuple:
+        if 0 <= value < len(value_probs):
+            exception_mass += value_probs[value]
+
+    if int(default_bit):
+        prob = 1.0 - exception_mass
+    else:
+        prob = exception_mass
+
+    prob = min(max(prob, 0.0), 1.0)
+    _LUT_CONST_BIT_PROB_CACHE[cache_key] = prob
+    return prob
+
+def _lut_const_bit_prob1(bus, default_bit, exception_keys, bit_prob_fn):
     #print("idan")
     abits = _bits_from_bus(bus)
     if abits is None:

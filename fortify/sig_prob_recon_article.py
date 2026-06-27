@@ -98,6 +98,13 @@ def populateSigProbs_recon_article(
     recon_targets = set(recon_only_set) if recon_only_set is not None else None
     recon_target_total = len(recon_targets) if recon_targets is not None else 0
     recon_target_done = 0
+    lut_debug = {
+        "expr_calls": 0,
+        "clamp_calls": 0,
+        "expr_nodes": {},
+        "clamp_nodes": {},
+        "recon_sinks": 0,
+    }
 
     def _expr_to_str(expr):
         if isinstance(expr, list):
@@ -107,6 +114,53 @@ def populateSigProbs_recon_article(
             args = ", ".join(_expr_to_str(arg) for arg in expr[1:])
             return f"{op}({args})"
         return str(expr)
+
+    def _lut_debug_key(sig, bus, default_bit, exception_keys, clk_name):
+        if isinstance(sig, str):
+            return sig
+        clk_suffix = f"|clk={clk_name}" if isinstance(clk_name, str) else ""
+        return (
+            f"LutConstBit({bus},default={default_bit},"
+            f"exceptions={len(exception_keys)}){clk_suffix}"
+        )
+
+    def _record_lut_eval(kind, sig, bus, default_bit, exception_keys, clk_name, extra=None):
+        key = _lut_debug_key(sig, bus, default_bit, exception_keys, clk_name)
+        if kind == "expr":
+            lut_debug["expr_calls"] += 1
+            node_stats = lut_debug["expr_nodes"].setdefault(
+                key,
+                {
+                    "calls": 0,
+                    "bus": bus,
+                    "default_bit": default_bit,
+                    "exception_count": len(exception_keys),
+                    "clk_name": clk_name,
+                    "refs": set(),
+                },
+            )
+            node_stats["calls"] += 1
+            if extra is not None:
+                node_stats["refs"].add(extra)
+        else:
+            lut_debug["clamp_calls"] += 1
+            node_stats = lut_debug["clamp_nodes"].setdefault(
+                key,
+                {
+                    "calls": 0,
+                    "bus": bus,
+                    "default_bit": default_bit,
+                    "exception_count": len(exception_keys),
+                    "clk_name": clk_name,
+                    "ref_pairs": set(),
+                    "clamp_sizes": [],
+                },
+            )
+            node_stats["calls"] += 1
+            if isinstance(extra, tuple) and len(extra) == 2:
+                ref_name, clamp_size = extra
+                node_stats["ref_pairs"].add(ref_name)
+                node_stats["clamp_sizes"].append(clamp_size)
 
     def _is_primary_input_signal(sig):
         return isinstance(sig, str) and (
@@ -420,6 +474,15 @@ def populateSigProbs_recon_article(
                 default_bit = expr[2] if len(expr) > 2 else 0
                 exception_keys = expr[3] if len(expr) > 3 else []
                 clk_name = expr[4] if len(expr) > 4 else None
+                _record_lut_eval(
+                    "expr",
+                    None,
+                    bus,
+                    default_bit,
+                    exception_keys,
+                    clk_name,
+                    extra=(ref_name, ref_val),
+                )
                 return _lut_const_bit_prob_with_clk(
                     bus,
                     default_bit,
@@ -611,6 +674,15 @@ def populateSigProbs_recon_article(
                 default_bit = exp[2] if len(exp) > 2 else 0
                 exception_keys = exp[3] if len(exp) > 3 else []
                 clk_name = exp[4] if len(exp) > 4 else None
+                _record_lut_eval(
+                    "clamp",
+                    sig,
+                    bus,
+                    default_bit,
+                    exception_keys,
+                    clk_name,
+                    extra=(ref_name, len(clamps)),
+                )
 
                 def _first_pass_bit_prob(bit_name):
                     if ref_name is None:
@@ -760,6 +832,7 @@ def populateSigProbs_recon_article(
         return p, p0, p1
 
     def _compute_recon_tables(op, a, b, z_vars):
+        lut_debug["recon_sinks"] += 1
         p = _recon_gate_prob_cached(op, a, b, z_vars, {}, None)
         p0 = {}
         p1 = {}
@@ -877,3 +950,45 @@ def populateSigProbs_recon_article(
                     f"{recon_target_done}/{recon_target_total} recon signals; "
                     f"{remaining} left; current={sig}"
                 )
+
+    print(
+        "[LUT-DEBUG] summary "
+        f"expr_calls={lut_debug['expr_calls']} "
+        f"clamp_calls={lut_debug['clamp_calls']} "
+        f"unique_expr_nodes={len(lut_debug['expr_nodes'])} "
+        f"unique_clamp_nodes={len(lut_debug['clamp_nodes'])} "
+        f"recon_sinks={lut_debug['recon_sinks']}"
+    )
+
+    hot_expr = sorted(
+        lut_debug["expr_nodes"].items(),
+        key=lambda item: item[1]["calls"],
+        reverse=True,
+    )[:5]
+    for key, stats in hot_expr:
+        ref_preview = sorted(str(ref) for ref in stats["refs"])[:6]
+        print(
+            "[LUT-DEBUG] expr "
+            f"node={key} calls={stats['calls']} "
+            f"bus={stats['bus']} exceptions={stats['exception_count']} "
+            f"refs={ref_preview}"
+        )
+
+    hot_clamp = sorted(
+        lut_debug["clamp_nodes"].items(),
+        key=lambda item: item[1]["calls"],
+        reverse=True,
+    )[:5]
+    for key, stats in hot_clamp:
+        ref_preview = sorted(str(ref) for ref in stats["ref_pairs"])[:6]
+        avg_clamp_size = (
+            sum(stats["clamp_sizes"]) / len(stats["clamp_sizes"])
+            if stats["clamp_sizes"]
+            else 0.0
+        )
+        print(
+            "[LUT-DEBUG] clamp "
+            f"node={key} calls={stats['calls']} "
+            f"bus={stats['bus']} exceptions={stats['exception_count']} "
+            f"refs={ref_preview} avg_clamp_size={avg_clamp_size:.2f}"
+        )
