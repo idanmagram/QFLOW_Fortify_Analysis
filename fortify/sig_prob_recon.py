@@ -180,7 +180,9 @@ def _lut_const_bit_prob(bus, default_bit, exception_keys, bit_prob_fn):
         value_probs = tuple(value_probs_list)
         _BUS_VALUE_PROB_CACHE[dist_key] = value_probs
 
-    exception_tuple = tuple(int(v) for v in exception_keys)
+    exception_tuple = exception_keys if isinstance(exception_keys, tuple) else tuple(
+        int(v) for v in exception_keys
+    )
     cache_key = (dist_key, int(default_bit), exception_tuple)
     cached = _LUT_CONST_BIT_PROB_CACHE.get(cache_key)
     if cached is not None:

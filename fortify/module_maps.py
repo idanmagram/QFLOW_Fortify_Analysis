@@ -104,7 +104,7 @@ def simplify_large_const_lut_cond(expr, min_cases=LARGE_CONST_LUT_MIN_CASES, tar
     if len(cases) < min_cases or target_bit_idx is None or not isinstance(sel_bus, str):
         return expr
 
-    exception_keys = [key for key, bit in cases if bit != default_bit]
+    exception_keys = tuple(key for key, bit in cases if bit != default_bit)
     if isinstance(clk_name, str):
         return ['LutConstBit', sel_bus, default_bit, exception_keys, clk_name]
     return ['LutConstBit', sel_bus, default_bit, exception_keys]
