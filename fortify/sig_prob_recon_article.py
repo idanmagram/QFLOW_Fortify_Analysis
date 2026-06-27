@@ -46,6 +46,9 @@ def populateSigProbs_recon_article(
     recon_only_set=None,
     graph_artifacts=None,
     max_shared_ancestors=MAX_SHARED_ANCESTORS,
+    max_recon_source_depth=None,
+    progress_label=None,
+    progress_every=50,
 ):
     """
     Populate:
@@ -89,8 +92,12 @@ def populateSigProbs_recon_article(
     primary_input_ancestor_cache = {}
     ancestor_cache = {}
     descendants_cache = {}
+    depth_cache = {}
     _expr_cache = {}
     _recon_dp_cache = {}
+    recon_targets = set(recon_only_set) if recon_only_set is not None else None
+    recon_target_total = len(recon_targets) if recon_targets is not None else 0
+    recon_target_done = 0
 
     def _expr_to_str(expr):
         if isinstance(expr, list):
@@ -212,15 +219,19 @@ def populateSigProbs_recon_article(
         b_ref_set = set(b_refs)
         valid_sources = set()
 
-        def _reaches_refs(node, refs):
-            node_desc = _collect_descendants_any(node)
-            return bool(node_desc & refs)
+        def _child_hits(child, refs):
+            child_desc = _collect_descendants_any(child)
+            return bool(child_desc & refs)
 
         for source in candidate:
-            # A valid reconvergence source must be able to reach both sink-input
-            # cones. The split may happen several levels downstream, so do not
-            # require two different immediate children here.
-            if _reaches_refs(source, a_ref_set) and _reaches_refs(source, b_ref_set):
+            source_children = graph_artifacts["children"].get(source, set())
+            if len(source_children) < 2:
+                continue
+
+            left_children = {child for child in source_children if _child_hits(child, a_ref_set)}
+            right_children = {child for child in source_children if _child_hits(child, b_ref_set)}
+
+            if any(left_child != right_child for left_child in left_children for right_child in right_children):
                 valid_sources.add(source)
 
         if not valid_sources:
@@ -228,17 +239,68 @@ def populateSigProbs_recon_article(
 
         minimal = set(valid_sources)
         for source in list(valid_sources):
+            source_desc = _collect_descendants_any(source)
             for other in valid_sources:
                 if other == source:
                     continue
-                other_desc = _collect_descendants_any(other)
-                # Keep the earliest branching causes of correlation and drop
-                # downstream shared nodes derived from them.
-                if source in other_desc:
+                if other in source_desc:
                     minimal.discard(source)
                     break
 
         return minimal
+
+    def _shortest_desc_distance(source, targets):
+        if not isinstance(source, str) or not targets:
+            return None
+        target_set = frozenset(t for t in targets if isinstance(t, str))
+        if not target_set:
+            return None
+        key = (source, target_set)
+        if key in depth_cache:
+            return depth_cache[key]
+
+        if source in target_set:
+            depth_cache[key] = 0
+            return 0
+
+        seen = {source}
+        queue = [(source, 0)]
+        while queue:
+            node, depth = queue.pop(0)
+            for child in graph_artifacts["children"].get(node, set()):
+                if child in seen:
+                    continue
+                if child in target_set:
+                    depth_cache[key] = depth + 1
+                    return depth + 1
+                seen.add(child)
+                queue.append((child, depth + 1))
+
+        depth_cache[key] = None
+        return None
+
+    def _filter_sources_by_depth(shared_sources, a, b):
+        if max_recon_source_depth is None:
+            return list(shared_sources)
+
+        try:
+            depth_limit = int(max_recon_source_depth)
+        except Exception:
+            return list(shared_sources)
+        if depth_limit < 0:
+            return list(shared_sources)
+
+        a_refs = set(_operand_signal_refs(a))
+        b_refs = set(_operand_signal_refs(b))
+        kept = []
+        for source in shared_sources:
+            left_depth = _shortest_desc_distance(source, a_refs)
+            right_depth = _shortest_desc_distance(source, b_refs)
+            if left_depth is None or right_depth is None:
+                continue
+            if max(left_depth, right_depth) <= depth_limit:
+                kept.append(source)
+        return kept
 
     def _is_input_reachable(bit_name):
         return bool(_collect_primary_input_parents(bit_name))
@@ -762,33 +824,30 @@ def populateSigProbs_recon_article(
                     #shared_sources = shared_sources - {'top.clk[0:0]'}
                     shared_sources = {s for s in shared_sources if 'clk' not in s}
                     if shared_sources:
-                        if len(shared_sources) > 2:
-                            print("more than 2 shared sources for ",sig)
                         print(f"[ARTICLE-RECON] sink={sig}")
                         print(f"[ARTICLE-RECON] left={_expr_to_str(a)}")
                         print(f"[ARTICLE-RECON] right={_expr_to_str(b)}")
-                        print("max_shared_ancestors ",max_shared_ancestors)
+                        #print("max_shared_ancestors ",max_shared_ancestors)
 
-                        print(
-                            "[ARTICLE-RECON] recon_sources="
-                            + ", ".join(sorted(shared_sources))
-                        )
-                        #shared_sources = shared_sources - {'top.clk[0:0]'}
-                        shared_sources = sorted(shared_sources)
-                        print(
-                            "[ARTICLE-RECON] BEFORE recon_sources="
-                            + ", ".join(sorted(shared_sources))
+                        #print(
+                        #    "[ARTICLE-RECON] recon_sources="
+                        #    + ", ".join(sorted(shared_sources))
+                        #)
+                        shared_sources = shared_sources - {'top.clk[0:0]'}
+                        shared_sources = _filter_sources_by_depth(
+                            sorted(shared_sources), a, b
                         )
                         shared_sources = shared_sources[:max_shared_ancestors]
-                        print(
-                            "[ARTICLE-RECON] recon_sources="
-                            + ", ".join(sorted(shared_sources))
-                        )
+                        if shared_sources:
+                            print(
+                                "[ARTICLE-RECON] After recon_sources="
+                                + ", ".join(sorted(shared_sources))
+                            )
 
-                        p, p0, p1 = _compute_recon_tables(
-                            op, a, b, shared_sources
-                        )
-                        return p, p0, p1, True
+                            p, p0, p1 = _compute_recon_tables(
+                                op, a, b, shared_sources
+                            )
+                            return p, p0, p1, True
 
             p, p0, p1 = _compute_expr_tables(exp)
             return p, p0, p1, False
@@ -804,4 +863,17 @@ def populateSigProbs_recon_article(
         if sig in s_hat:
             continue
         s_hat[sig], s_hat_0[sig], s_hat_1[sig], _ = _compute_signal_result(sig)
-
+        if recon_targets is not None and sig in recon_targets:
+            recon_target_done += 1
+            if (
+                recon_target_done == 1
+                or recon_target_done == recon_target_total
+                or recon_target_done % max(1, int(progress_every)) == 0
+            ):
+                label = progress_label or "pass2"
+                remaining = recon_target_total - recon_target_done
+                print(
+                    f"[RECON-PROGRESS] {label} processed "
+                    f"{recon_target_done}/{recon_target_total} recon signals; "
+                    f"{remaining} left; current={sig}"
+                )

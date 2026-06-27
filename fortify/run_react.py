@@ -478,12 +478,14 @@ def main(input_file_path, top_module_name, ref_module_name, ref_instance_name,
             for s in sorted(recon_only_set):
                 f.write(f"{s}\n")
         print(f"Saved Reconvergence subgraph to: {auto_subgraph_path}")
-        #with open("s_hat_first_pass.txt", "w") as f:
-        #    print("s_hat", s_hat, file=f)
+        with open("s_hat_first_pass.txt", "w") as f:
+            print("s_hat", s_hat, file=f)
         # Pass 2: recompute only the recon subgraph and keep Pass-1 values outside it.
         # This avoids recalculating unaffected nodes.
         print("Pass 22")
         reconPassStart = time.time()
+        recon_target_total = len(recon_only_set)
+        print(f"Pass 2 progress: 0/{recon_target_total} recon signals processed; {recon_target_total} left")
         for sig in recon_only_set:
             s_hat.pop(sig, None)
             s_hat_0.pop(sig, None)
@@ -494,6 +496,7 @@ def main(input_file_path, top_module_name, ref_module_name, ref_instance_name,
             truthTableMap, refSigBitNames, inputSigBitNames, sigWidths,
             recon_only_set=recon_only_set, graph_artifacts=graph_artifacts,
             max_shared_ancestors=max_shared_ancestors,
+            progress_label="run_react pass2",
         )
         reconPassEnd = time.time()
         print("Total time taken reconvergence pass: {:.4f}s".format(reconPassEnd - reconPassStart))

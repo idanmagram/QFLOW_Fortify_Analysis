@@ -5,14 +5,8 @@ module top(clk, rst, state, key, out, Capacitance);
     output [127:0] out;
     output Antena;
 	wire Tj_Trig;
-	reg [127:0] SECRETKey;
 
 
-    //wire [31:0] k0, v1, d;
-
-    // AES core (named ports)
-	
-	
     aes_128 AES (
         .clk  (clk),
        .state(state),
@@ -24,40 +18,12 @@ module top(clk, rst, state, key, out, Capacitance);
 	
 	//Trojan_Trigger Tj_Trigger (.rst(rst), .clk(clk), .state(state), .Tj_Trig(Tj_Trig));
 	//AM_Transmission TSC (.key(key), .clk(clk), .rst(rst), .Tj_Trig(Tj_Trig), .Antena(Antena));
-	/*
-	 always @(rst, clk)
-	 begin
-			if (rst == 1)
-				state <= 0;
-			else
-				state <= state + 1;
-	 end
-
-	 always @(posedge Tj_Trig, posedge state[127])
-	 begin
-			if (Tj_Trig == 1)
-				SECRETKey <= key;
-			else
-				SECRETKey <= 127'b0;
-	 end
-	 assign Antena = SECRETKey[state];
-*/
 
 
 
    
 endmodule
 
-
-
-module idan(v0,v1,d);
-	input [31:0] v0;
-	input [31:0] v1;
-	output [31:0] d;
-	
-	xor32 XZ0_0 (.o(d), .a(v0),    .b(v1));
-	
-endmodule
 
 	
 
@@ -72,7 +38,6 @@ module aes_128(clk, state, key, out);
     wire [127:0] k1, k2, k3, k4, k5, k6, k7, k8, k9;
     wire [127:0] k0b, k1b, k2b, k3b, k4b, k5b, k6b, k7b, k8b, k9b;
     wire [127:0] k10_unused;
-	//assign k1 = key;
     always @(posedge clk) begin
         s0 <= state ^ key;
         k0 <= key;
@@ -85,7 +50,7 @@ module aes_128(clk, state, key, out);
     expand_key_128 a1  (.clk(clk), .in(k0),  .out_1(k1),  .out_2(k0b), .rcon(8'h00));
 	
     expand_key_128 a2  (.clk(clk), .in(k1),  .out_1(k2),  .out_2(k1b), .rcon(8'h00));
-	
+	/*
     expand_key_128 a3  (.clk(clk), .in(k2),  .out_1(k3),  .out_2(k2b), .rcon(8'h04));
 	
     expand_key_128 a4  (.clk(clk), .in(k3),  .out_1(k4),  .out_2(k3b), .rcon(8'h08));
@@ -95,7 +60,7 @@ module aes_128(clk, state, key, out);
     expand_key_128 a8  (.clk(clk), .in(k7),  .out_1(k8),  .out_2(k7b), .rcon(8'h80));
     expand_key_128 a9  (.clk(clk), .in(k8),  .out_1(k9),  .out_2(k8b), .rcon(8'h1B));
     expand_key_128 a10 (.clk(clk), .in(k9),  .out_1(k10_unused), .out_2(k9b), .rcon(8'h36));
-	
+	*/
 	//assign out = k9b;
 	//assign out = k0b;
     // -------------------------------------------------------
@@ -106,9 +71,9 @@ module aes_128(clk, state, key, out);
     one_round  r1 (.clk(clk), .state_in(s0), .key(k0b), .state_out(s1));
 	
     one_round  r2 (.clk(clk), .state_in(s1), .key(k1b), .state_out(out));
-	
-    //one_round  r3 (.clk(clk), .state_in(s2), .key(k2b), .state_out(out));
 	/*
+    one_round  r3 (.clk(clk), .state_in(s2), .key(k2b), .state_out(s3));
+	
     one_round  r4 (.clk(clk), .state_in(s3), .key(k3b), .state_out(s4));
 	
     one_round  r5 (.clk(clk), .state_in(s4), .key(k4b), .state_out(s5));
@@ -138,7 +103,6 @@ module lfsr_counter (rst, clk, lfsr);
 	
 	
 	assign lfsr = lfsr_stream; 
-	//assign lfsr = 20'b10011001100110011001;
 
 	// 4-input XOR built from binary XORs
 	xor4_bit U_X4 (.o(d0),
@@ -345,6 +309,7 @@ module expand_key_128 (clk, in, out_1, out_2, rcon);
 	end
 
     S4 S4_0 (.clk(clk), .in(k3_rot), .out(k4a));
+	//assign k4a = k3_rot;
 
 
 	xor32 X_k0b (.o(k0b), .a(k0a), .b(k4a));

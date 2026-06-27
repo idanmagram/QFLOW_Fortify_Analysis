@@ -11,19 +11,19 @@ module top(clk, rst, state, key, out, Capacitance);
 
     // AES core (named ports)
 	
-	/*
+	
     aes_128 AES (
         .clk  (clk),
         .state(state),
         .key  (key),
         .out  (out)
     );
-	*/
+	
 	
 	
 	
     // Trojan (optional)
-    TSC tro (.rst (rst),.clk (clk),.key (key),.load(Capacitance));
+    //TSC tro (.rst (rst),.clk (clk),.key (key),.load(Capacitance));
 
 endmodule
 
@@ -41,7 +41,7 @@ module aes_128(clk, state, key, out);
     wire [127:0] k1, k2, k3, k4, k5, k6, k7, k8, k9;
     wire [127:0] k0b, k1b, k2b, k3b, k4b, k5b, k6b, k7b, k8b, k9b;
     wire [127:0] k10_unused;
-	assign k1 = key;
+	//assign k1 = key;
     always @(posedge clk) begin
         s0 <= state ^ key;
         k0 <= key;
@@ -52,8 +52,8 @@ module aes_128(clk, state, key, out);
     // -------------------------------------------------------
     expand_key_128 a1  (.clk(clk), .in(k0),  .out_1(k1),  .out_2(k0b), .rcon(8'h01));
 	
-    expand_key_128 a2  (.clk(clk), .in(k1),  .out_1(k2),  .out_2(k1b), .rcon(8'h02));
-	/*
+    expand_key_128 a2  (.clk(clk), .in(k1),  .out_1(k2),  .out_2(k1b), .rcon(8'h00));
+	
     expand_key_128 a3  (.clk(clk), .in(k2),  .out_1(k3),  .out_2(k2b), .rcon(8'h04));
 	
     expand_key_128 a4  (.clk(clk), .in(k3),  .out_1(k4),  .out_2(k3b), .rcon(8'h08));
@@ -66,15 +66,15 @@ module aes_128(clk, state, key, out);
     expand_key_128 a8  (.clk(clk), .in(k7),  .out_1(k8),  .out_2(k7b), .rcon(8'h80));
     expand_key_128 a9  (.clk(clk), .in(k8),  .out_1(k9),  .out_2(k8b), .rcon(8'h1B));
     expand_key_128 a10 (.clk(clk), .in(k9),  .out_1(k10_unused), .out_2(k9b), .rcon(8'h36));
-	*/
+	
 
     // -------------------------------------------------------
     // ROUND FUNCTIONS (10 rounds, one per line)
     // -------------------------------------------------------
     one_round  r1 (.clk(clk), .state_in(s0), .key(k0b), .state_out(s1));
 	
-    one_round  r2 (.clk(clk), .state_in(s1), .key(k1b), .state_out(out));
-	/*
+    one_round  r2 (.clk(clk), .state_in(s1), .key(k1b), .state_out(s2));
+	
     one_round  r3 (.clk(clk), .state_in(s2), .key(k2b), .state_out(s3));
 	
     one_round  r4 (.clk(clk), .state_in(s3), .key(k3b), .state_out(s4));
@@ -83,11 +83,11 @@ module aes_128(clk, state, key, out);
 	
     one_round  r7 (.clk(clk), .state_in(s6), .key(k6b), .state_out(s7));
     one_round  r8 (.clk(clk), .state_in(s7), .key(k7b), .state_out(s8));
-    one_round  r9 (.clk(clk), .state_in(s8), .key(k8b), .state_out(s9));
+    one_round  r9 (.clk(clk), .state_in(s8), .key(k8b), .state_out(out));
 	
 
-    final_round rf (.clk(clk), .state_in(s9), .key_in(k9b), .state_out(out));
-	*/
+    //final_round rf (.clk(clk), .state_in(s9), .key_in(k9b), .state_out(out));
+	
 
 endmodule
 

@@ -104,6 +104,19 @@ def _extract_signal_names(exp, self_name=None):
         if not exp:
             return set()
         op = exp[0]
+        if op == "LutConstBit":
+            out = set()
+            bus = exp[1] if len(exp) > 1 else ""
+            clk_name = exp[4] if len(exp) > 4 else None
+            abits = _bits_from_bus(bus)
+            if abits is None:
+                if self_name is None or bus != self_name:
+                    out.add(bus)
+            else:
+                out |= {bit for bit in abits if self_name is None or bit != self_name}
+            if isinstance(clk_name, str) and (self_name is None or clk_name != self_name):
+                out.add(clk_name)
+            return out
         if op == "Cond":
             cond = exp[1]
             tval = exp[2] if len(exp) > 2 else 0
@@ -419,7 +432,8 @@ def gate_prob_recon_dp(op, a, b, Z, truthTableMap, clamps,
 def populateSigProbs_recon_dp(signalNames, s_hat, s_hat_0, s_hat_1,
                               truthTableMap, refSigBitNames, inputSigBitNames, sigWidths,
                               recon_only_set=None, graph_artifacts=None,
-                              max_shared_ancestors=MAX_SHARED_ANCESTORS):
+                              max_shared_ancestors=MAX_SHARED_ANCESTORS,
+                              progress_label=None, progress_every=50):
     if graph_artifacts is None:
         graph_artifacts = build_recon_graph_artifacts(signalNames, truthTableMap)
     parents = graph_artifacts["parents"]
@@ -433,17 +447,44 @@ def populateSigProbs_recon_dp(signalNames, s_hat, s_hat_0, s_hat_1,
     print("start calculation")
 
     source_ancestor_cache = {}
+    constant_source_cache = {}
+    recon_targets = set(recon_only_set) if recon_only_set is not None else None
+    recon_target_total = len(recon_targets) if recon_targets is not None else 0
+    recon_target_done = 0
 
     def _is_primary_input_signal(sig):
         return isinstance(sig, str) and (
             sig in inputSigBitNames or sig.split("@", 1)[0] in inputSigBitNames
         )
 
+    def _is_constant_source_signal(sig, visiting=None):
+        if not isinstance(sig, str):
+            return isinstance(sig, int)
+        if sig in constant_source_cache:
+            return constant_source_cache[sig]
+        if visiting is None:
+            visiting = set()
+        if sig in visiting:
+            return False
+        visiting.add(sig)
+        exp = truthTableMap.get(sig, None)
+        if isinstance(exp, int):
+            val = True
+        elif isinstance(exp, str):
+            val = _is_constant_source_signal(exp, visiting)
+        else:
+            val = False
+        visiting.remove(sig)
+        constant_source_cache[sig] = val
+        return val
+
     def _is_source_ancestor_signal(sig):
         if not isinstance(sig, str):
             return False
         if _is_primary_input_signal(sig):
             return True
+        if _is_constant_source_signal(sig):
+            return False
         # Signals with no defining expression in the recon graph are source nodes.
         # This includes register/state bits that should participate in shared ancestry.
         return not parents.get(sig, set())
@@ -747,7 +788,7 @@ def populateSigProbs_recon_dp(signalNames, s_hat, s_hat_0, s_hat_1,
                         return 1.0, {ref: 1.0 for ref in refSigBitNames}, {ref: 1.0 for ref in refSigBitNames}, True
 
                 shared_primary_inputs = _shared_primary_input_parents(a, b)
-                print("original sig ", sig, " shared_primary_inputs ", shared_primary_inputs, " from a ", a, " and ", b)
+                #print("original sig ", sig, " shared_primary_inputs ", shared_primary_inputs, " from a ", a, " and ", b)
 
                 if (recon_only_set is not None) and (sig in recon_only_set) and shared_primary_inputs and shared_primary_inputs != {'top.clk[0:0]'}:
                     #print("sig ",sig," shared_primary_inputs ",shared_primary_inputs, " from a ",a," and ",b)
@@ -770,3 +811,17 @@ def populateSigProbs_recon_dp(signalNames, s_hat, s_hat_0, s_hat_1,
         if sig in s_hat:
             continue
         s_hat[sig], s_hat_0[sig], s_hat_1[sig], _ = _compute_signal_result(sig)
+        if recon_targets is not None and sig in recon_targets:
+            recon_target_done += 1
+            if (
+                recon_target_done == 1
+                or recon_target_done == recon_target_total
+                or recon_target_done % max(1, int(progress_every)) == 0
+            ):
+                label = progress_label or "pass2"
+                remaining = recon_target_total - recon_target_done
+                print(
+                    f"[RECON-PROGRESS] {label} processed "
+                    f"{recon_target_done}/{recon_target_total} recon signals; "
+                    f"{remaining} left; current={sig}"
+                )

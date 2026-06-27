@@ -139,24 +139,75 @@ def populateModuleInputOutputPortListMap(moduleAst):
     moduleWireListMap[module_name] = []
     moduleWireWidthListMap[module_name] = []
 
+    seen_inputs = set()
+    seen_outputs = set()
+    seen_wires = set()
+
+    def _decl_width(node):
+        width = getattr(node, "width", None)
+        if width is None:
+            return 1
+        return (
+            utils.verilogIntConstToInt(width.msb)
+            - utils.verilogIntConstToInt(width.lsb)
+            + 1
+        )
+
+    def _add_port(name, width, is_output):
+        if is_output:
+            if name not in seen_outputs:
+                moduleOutputPortListMap[module_name].append(name)
+                moduleOutputPortWidthListMap[module_name].append(width)
+                seen_outputs.add(name)
+        else:
+            if name not in seen_inputs:
+                moduleInputPortListMap[module_name].append(name)
+                moduleInputPortWidthListMap[module_name].append(width)
+                seen_inputs.add(name)
+
+    portlist = getattr(moduleAst, "portlist", None)
+    for port in getattr(portlist, "ports", []) or []:
+        if isinstance(port, vast.Ioport):
+            first = getattr(port, "first", None)
+            second = getattr(port, "second", None)
+            decl = first if isinstance(first, (vast.Input, vast.Output)) else second
+            if isinstance(decl, vast.Input):
+                _add_port(decl.name, _decl_width(decl), is_output=False)
+            elif isinstance(decl, vast.Output):
+                _add_port(decl.name, _decl_width(decl), is_output=True)
+
     for itemAst in moduleAst.items:
         if isinstance(itemAst, vast.Decl):
             for varAst in itemAst.list:
-                if varAst.width is not None:
-                    width = utils.verilogIntConstToInt(varAst.width.msb) - utils.verilogIntConstToInt(
-                        varAst.width.lsb) + 1
-                else:
-                    width = 1
+                width = _decl_width(varAst)
 
                 if isinstance(varAst, vast.Input):
-                    moduleInputPortListMap[module_name].append(varAst.name)
-                    moduleInputPortWidthListMap[module_name].append(width)
+                    _add_port(varAst.name, width, is_output=False)
                 elif isinstance(varAst, vast.Output):
-                    moduleOutputPortListMap[module_name].append(varAst.name)
-                    moduleOutputPortWidthListMap[module_name].append(width)
+                    _add_port(varAst.name, width, is_output=True)
                 elif isinstance(varAst, vast.Wire) or isinstance(varAst, vast.Reg):
-                    moduleWireListMap[module_name].append(varAst.name)
-                    moduleWireWidthListMap[module_name].append(width)
+                    if varAst.name not in seen_wires:
+                        moduleWireListMap[module_name].append(varAst.name)
+                        moduleWireWidthListMap[module_name].append(width)
+                        seen_wires.add(varAst.name)
+                    if isinstance(varAst, vast.Reg):
+                        if varAst.name in seen_outputs:
+                            out_idx = moduleOutputPortListMap[module_name].index(varAst.name)
+                            moduleOutputPortWidthListMap[module_name][out_idx] = width
+
+    # PyVerilog may represent declarations such as `output reg [7:0] out;` as a
+    # separate `Reg` item without preserving the output width on the `Output`
+    # entry. Mirror widths from matching regs onto output ports.
+    wire_widths = dict(
+        zip(moduleWireListMap[module_name], moduleWireWidthListMap[module_name])
+    )
+    for idx, out_name in enumerate(moduleOutputPortListMap[module_name]):
+        if (
+            moduleOutputPortWidthListMap[module_name][idx] == 1
+            and out_name in wire_widths
+            and wire_widths[out_name] > 1
+        ):
+            moduleOutputPortWidthListMap[module_name][idx] = wire_widths[out_name]
 
 
 # recursively gets the list of all instances within an ast
