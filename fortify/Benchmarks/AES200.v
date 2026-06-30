@@ -78,7 +78,7 @@ module aes_128(clk, state, key, out);
     wire [127:0] k1, k2, k3, k4, k5, k6, k7, k8, k9;
     wire [127:0] k0b, k1b, k2b, k3b, k4b, k5b, k6b, k7b, k8b, k9b;
     wire [127:0] k10_unused;
-	assign k1 = key;
+	//assign k1 = key;
     always @(posedge clk) begin
         s0 <= state ^ key;
         k0 <= key;

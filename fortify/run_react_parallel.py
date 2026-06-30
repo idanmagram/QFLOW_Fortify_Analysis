@@ -484,6 +484,49 @@ def main(input_file_path, top_module_name, ref_module_name, ref_instance_name,
     print("Total time taken: {:.4f}s".format(endTime - startTime))
     print("\nCompleted!")
     print("******************************************************************\n")
+
+    import csv
+
+    # Sort all signals by Leakage_PBV, highest first
+    all_signals = sorted(
+        aggregated.items(),
+        key=lambda x: x[1]["Leakage_PBV"],
+        reverse=True
+    )
+
+    print("\nAll signals sorted by highest leakage:\n")
+
+    csv_file = "all_signal_leakage.csv"
+
+    with open(csv_file, "w", newline="") as f:
+        writer = csv.writer(f)
+
+        # CSV header
+        writer.writerow(["Rank", "Signal", "Ref", "Log_LR_gap", "Leakage_PBV"])
+
+        for rank, ((sig, ref), metrics) in enumerate(all_signals, start=1):
+            log_lr_gap = metrics["Log_LR_gap"]
+            leakage_pbv = metrics["Leakage_PBV"]
+
+            # Print to terminal
+            print(
+                f"Rank: {rank}, "
+                f"Signal: {sig}, Ref: {ref}, "
+                f"Log_LR_gap: {log_lr_gap:.15f}, "
+                f"Leakage_PBV: {leakage_pbv:.15f}"
+            )
+
+            # Write to CSV
+            writer.writerow([
+                rank,
+                sig,
+                ref,
+                f"{log_lr_gap:.15f}",
+                f"{leakage_pbv:.15f}",
+            ])
+
+    print(f"\nSaved all signal leakage values to {csv_file}")
+
     return
 
 

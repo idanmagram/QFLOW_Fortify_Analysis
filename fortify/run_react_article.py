@@ -6,13 +6,17 @@ import module_maps
 import os
 import re
 import sig_prob_recon
-import sig_prob_recon_t
+# import sig_prob_recon_t
 import sig_prob_recon_article
 from tqdm import tqdm
 import time
 from datetime import datetime
 from extract_sub_recon_graph import extract_sub_recon_graph, extract_leaky_outputs
 from recon_graph_artifacts import build_recon_graph_artifacts
+
+import csv
+from pathlib import Path
+
 
 UNROLL_DEPTH = 32
 
@@ -144,6 +148,128 @@ def _aggregate_per_output_rows(per_output_results, score_key="Leakage_PBV"):
             aggregated[key] = row
     return aggregated
 
+def _make_all_signal_targets(signalNames, truthTableMap, s_hat, s_hat_0, s_hat_1, outputSigBitNames):
+    """
+    Build the set of all signals for which leakage can be checked.
+
+    A signal can only get leakage if it exists in both s_hat_0 and s_hat_1,
+    because estimate_c_and_pbv_from_conditional_probs needs conditional
+    probabilities for each reference bit.
+    """
+    targets = set()
+
+    targets.update(sig for sig in signalNames if isinstance(sig, str))
+    targets.update(sig for sig in truthTableMap.keys() if isinstance(sig, str))
+    targets.update(sig for sig in s_hat.keys() if isinstance(sig, str))
+    targets.update(sig for sig in s_hat_0.keys() if isinstance(sig, str))
+    targets.update(sig for sig in s_hat_1.keys() if isinstance(sig, str))
+    targets.update(sig for sig in outputSigBitNames if isinstance(sig, str))
+
+    return sorted(targets)
+
+
+def _write_all_signal_leakage_csvs(results_dir, per_output_results):
+    """
+    Writes two CSVs:
+
+    1. all_signal_leakage_by_ref.csv
+       One row per (signal, ref) pair.
+
+    2. all_signal_leakage.csv
+       One row per signal, keeping the ref that gives maximum Leakage_PBV.
+       This is the best file for your notebook graph plotting.
+    """
+    os.makedirs(results_dir, exist_ok=True)
+
+    raw_path = os.path.join(results_dir, "all_signal_leakage_by_ref.csv")
+    max_path = os.path.join(results_dir, "all_signal_leakage.csv")
+
+    raw_rows = sorted(
+        per_output_results.items(),
+        key=lambda item: item[1].get("Leakage_PBV", 0.0),
+        reverse=True,
+    )
+
+    with open(raw_path, "w", newline="", encoding="utf-8") as f:
+        writer = csv.writer(f)
+        writer.writerow([
+            "Rank",
+            "Signal",
+            "Ref",
+            "SignalBase",
+            "RefBase",
+            "PBV",
+            "Leakage_PBV",
+            "prior",
+        ])
+
+        for rank, ((sig, ref), metrics) in enumerate(raw_rows, start=1):
+            writer.writerow([
+                rank,
+                sig,
+                ref,
+                _base_name(sig),
+                _base_name(ref),
+                f"{metrics.get('PBV', 0.0):.25f}",
+                f"{metrics.get('Leakage_PBV', 0.0):.25f}",
+                f"{metrics.get('prior', 0.0):.25f}",
+            ])
+
+    best_per_signal = {}
+
+    for (sig, ref), metrics in per_output_results.items():
+        base_sig = _base_name(sig)
+        base_ref = _base_name(ref)
+
+        row = {
+            "Signal": base_sig,
+            "Ref": base_ref,
+            "ActualSignal": sig,
+            "ActualRef": ref,
+            "PBV": metrics.get("PBV", 0.0),
+            "Leakage_PBV": metrics.get("Leakage_PBV", 0.0),
+            "prior": metrics.get("prior", 0.0),
+        }
+
+        if (
+            base_sig not in best_per_signal
+            or row["Leakage_PBV"] > best_per_signal[base_sig]["Leakage_PBV"]
+        ):
+            best_per_signal[base_sig] = row
+
+    best_rows = sorted(
+        best_per_signal.values(),
+        key=lambda row: row["Leakage_PBV"],
+        reverse=True,
+    )
+
+    with open(max_path, "w", newline="", encoding="utf-8") as f:
+        writer = csv.writer(f)
+        writer.writerow([
+            "Rank",
+            "Signal",
+            "Ref",
+            "ActualSignal",
+            "ActualRef",
+            "PBV",
+            "Leakage_PBV",
+            "prior",
+        ])
+
+        for rank, row in enumerate(best_rows, start=1):
+            writer.writerow([
+                rank,
+                row["Signal"],
+                row["Ref"],
+                row["ActualSignal"],
+                row["ActualRef"],
+                f"{row['PBV']:.25f}",
+                f"{row['Leakage_PBV']:.25f}",
+                f"{row['prior']:.25f}",
+            ])
+
+    print(f"Saved all signal/ref leakage rows to: {raw_path}")
+    print(f"Saved max leakage per signal to: {max_path}")
 
 def _snapshot_output_signal_probabilities(s_hat, outputSigBitNames):
     aggregated = {}
@@ -533,6 +659,7 @@ def main(
                 for t in range(UNROLL_DEPTH + 1):
                     outputSigBitNames.append(f"{top_module_name}.{oname}[{i}:{i}]@{t}")
 
+
     def _print_top_150_leakage(per_output_results, title):
         aggregated = {}
         for (sig, ref), metrics in per_output_results.items():
@@ -576,8 +703,8 @@ def main(
         recon_populate_fn = sig_prob_recon_article.populateSigProbs_recon_article
         if reconvergence_algorithm == "dp":
             recon_populate_fn = sig_prob_recon.populateSigProbs_recon_dp
-        elif reconvergence_algorithm == "t":
-            recon_populate_fn = sig_prob_recon_t.populateSigProbs_recon_t
+        # elif reconvergence_algorithm == "t":
+        #     recon_populate_fn = sig_prob_recon_t.populateSigProbs_recon_t
         recon_populate_kwargs = {
             "graph_artifacts": graph_artifacts,
             "max_shared_ancestors": max_shared_ancestors,
@@ -702,6 +829,33 @@ def main(
                 )
 
     print("finished calc")
+
+    results_dir = os.path.dirname(leaks_file_path)
+
+    print("Computing leakage for all signals for CSV export")
+
+    allTargetSignalNames = _make_all_signal_targets(
+        signalNames=signalNames,
+        truthTableMap=truthTableMap,
+        s_hat=s_hat,
+        s_hat_0=s_hat_0,
+        s_hat_1=s_hat_1,
+        outputSigBitNames=outputSigBitNames,
+    )
+
+    all_signal_results = estimate_c_and_pbv_from_conditional_probs(
+        s_hat_0,
+        s_hat_1,
+        s_hat,
+        refSigBitNames,
+        signalNames,
+        target_signals=allTargetSignalNames,
+    )
+
+    _write_all_signal_leakage_csvs(
+        results_dir,
+        all_signal_results["per_output"],
+    )
 
     results = estimate_c_and_pbv_from_conditional_probs(
         s_hat_0,

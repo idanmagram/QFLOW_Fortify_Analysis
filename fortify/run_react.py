@@ -7,7 +7,7 @@ import module_maps
 import os
 import re
 import sig_prob_recon
-import sig_prob_recon_t
+# import sig_prob_recon_t
 from tqdm import tqdm
 import time
 from datetime import datetime
@@ -393,8 +393,8 @@ def main(input_file_path, top_module_name, ref_module_name, ref_instance_name,
     if reconvergence_aware:
         print("Reconvergance aware calculation")
         recon_populate_fn = sig_prob_recon.populateSigProbs_recon_dp
-        if reconvergence_algorithm == "t":
-            recon_populate_fn = sig_prob_recon_t.populateSigProbs_recon_t
+        # if reconvergence_algorithm == "t":
+        #     recon_populate_fn = sig_prob_recon_t.populateSigProbs_recon_t
 
         loaded_subgraph = None
         if subgraph_path:
